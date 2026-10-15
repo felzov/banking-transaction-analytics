@@ -1,0 +1,9 @@
+date,description,amount,currency
+2026-09-01,Rent,-950.00,GBP
+2026-09-31,Bad date,-1.00,GBP
+2026-09-02,Too precise,-1.005,GBP
+2026-09-03,Thousands separator,"1,200.00",GBP
+2026-09-04,Unknown currency,-5.00,XYZ
+2026-09-05,,-5.00,GBP
+2026-09-06,Short row,-5.00
+2026-09-07,Refund,15.00,gbp

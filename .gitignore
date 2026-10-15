@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.env
+
+# Never commit real bank statements. Only anonymized fixtures under tests/fixtures/.
+*.csv
+!tests/fixtures/**/*.csv

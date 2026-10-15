@@ -1,0 +1,6 @@
+date,description,amount,currency,reference
+2026-09-01,SALARY ACME LTD,2500.00,GBP,REF-0001
+2026-09-02,  Coffee   Shop  ,-3.20,GBP,REF-0002
+2026-09-02,Coffee Shop,-3.20,GBP,REF-0003
+2026-09-03,"Grocer, High Street",-45.67,GBP,REF-0004
+2026-09-04,Hotel Berlin,-120.5,EUR,REF-0005
