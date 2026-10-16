@@ -1,6 +1,6 @@
 """Currency and amount parsing.
 
-Policy (ADR 0002):
+Policy (ADR 0001):
 - Amounts are stored as signed integers in the currency's minor unit (pence, cents).
 - Negative = money leaving the account (debit), positive = money arriving (credit).
 - Parsing never rounds: more fractional digits than the currency allows is an error.
