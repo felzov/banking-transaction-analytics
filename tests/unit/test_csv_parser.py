@@ -129,3 +129,14 @@ def test_row_count_limit_counts_invalid_rows_too() -> None:
     with pytest.raises(FileRejectedError) as exc:
         parse_statement_csv(content, max_rows=2)
     assert exc.value.code is FileErrorCode.TOO_MANY_ROWS
+
+
+def test_nul_in_description_is_a_row_error() -> None:
+    content = HEADER + b"2026-09-01,Caf\x00e,-1.00,GBP\n2026-09-01,Ok,-1.00,GBP\n"
+
+    result = parse_statement_csv(content)
+
+    assert [(e.row_number, e.code, e.column) for e in result.errors] == [
+        (2, FieldErrorCode.INVALID_CHARACTERS, "description")
+    ]
+    assert [t.row_number for t in result.transactions] == [3]

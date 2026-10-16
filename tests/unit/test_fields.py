@@ -58,3 +58,24 @@ def test_description_errors(raw: str, code: FieldErrorCode) -> None:
     with pytest.raises(FieldValidationError) as exc:
         clean_description(raw)
     assert exc.value.code is code
+
+
+@pytest.mark.parametrize("raw", ["Caf\x00e", "Bus\x01fare", "Shop\x7f"])
+def test_control_characters_are_rejected(raw: str) -> None:
+    # NUL cannot be stored in PostgreSQL TEXT; other Cc characters are invisible junk.
+    with pytest.raises(FieldValidationError) as exc:
+        clean_description(raw)
+    assert exc.value.code is FieldErrorCode.INVALID_CHARACTERS
+    assert raw not in exc.value.message
+
+
+def test_format_characters_are_kept() -> None:
+    # Cf (ZWJ in emoji sequences, RTL marks) is legitimate text, not a control character.
+    family = "\U0001f468‍\U0001f469‍\U0001f467"
+    assert clean_description(f"Gift {family}") == f"Gift {family}"
+    assert clean_description("‏شركة") == "‏شركة"
+
+
+def test_whitespace_controls_are_still_collapsed_not_rejected() -> None:
+    # \x85 (NEL) and \x1c-\x1f are Cc too, but Python treats them as whitespace.
+    assert clean_description("Coffee\t\r\nShop\x0b\x0c\x85\x1f") == "Coffee Shop"

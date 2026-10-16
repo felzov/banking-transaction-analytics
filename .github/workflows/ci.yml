@@ -15,6 +15,23 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.14"]
+
+    services:
+      postgres:
+        # Same major version as compose.yaml.
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          # Throwaway password for an ephemeral CI-only container; not a secret.
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -32,5 +49,10 @@ jobs:
       - name: Ruff format
         run: uv run --no-sync ruff format --check .
 
-      - name: Tests
-        run: uv run --no-sync pytest
+      - name: Unit tests
+        run: uv run --no-sync pytest -m "not integration"
+
+      - name: Integration tests
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/transaction_analytics_test
+        run: uv run --no-sync pytest -m integration
