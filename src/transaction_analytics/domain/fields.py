@@ -30,10 +30,19 @@ def parse_booking_date(raw: str) -> date:
 
 
 def clean_description(raw: str) -> str:
-    """Description as shown to the user: Unicode-normalized, whitespace collapsed, case kept."""
+    """Description as shown to the user: Unicode-normalized, whitespace collapsed, case kept.
+
+    Control characters (Unicode category Cc) left after whitespace handling are rejected:
+    PostgreSQL TEXT cannot store NUL at all, and the rest are invisible junk. Format characters
+    (Cf: zero-width joiners in emoji, RTL marks) are legitimate text and are kept.
+    """
     text = _WHITESPACE.sub(" ", unicodedata.normalize("NFKC", raw)).strip()
     if not text:
         raise FieldValidationError(FieldErrorCode.MISSING_VALUE, "Description is required.")
+    if any(unicodedata.category(char) == "Cc" for char in text):
+        raise FieldValidationError(
+            FieldErrorCode.INVALID_CHARACTERS, "Description contains control characters."
+        )
     if len(text) > MAX_DESCRIPTION_LENGTH:
         raise FieldValidationError(
             FieldErrorCode.DESCRIPTION_TOO_LONG,

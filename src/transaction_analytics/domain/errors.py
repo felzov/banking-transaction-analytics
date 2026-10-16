@@ -17,6 +17,7 @@ class FieldErrorCode(StrEnum):
     INVALID_DATE = "invalid_date"
     UNSUPPORTED_CURRENCY = "unsupported_currency"
     DESCRIPTION_TOO_LONG = "description_too_long"
+    INVALID_CHARACTERS = "invalid_characters"
     COLUMN_COUNT_MISMATCH = "column_count_mismatch"
 
 
