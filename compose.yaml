@@ -1,4 +1,4 @@
-# Local PostgreSQL for development. Not used by the code until Phase 2 (models + migrations).
+# Local PostgreSQL for development and integration tests (see README "Database").
 services:
   db:
     image: postgres:17
