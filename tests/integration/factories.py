@@ -7,8 +7,6 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy.exc import IntegrityError
-
 from transaction_analytics.data.models import Account, ImportJob, ImportRowError, Transaction
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
@@ -95,8 +93,3 @@ def row_error(import_job: ImportJob, **overrides: Any) -> ImportRowError:
         "message": "Date is not a real calendar date.",
     }
     return ImportRowError(**(values | overrides))
-
-
-def constraint_name(exc: IntegrityError) -> str | None:
-    """Name of the violated constraint, from the asyncpg error behind SQLAlchemy's wrapper."""
-    return getattr(exc.orig.__cause__, "constraint_name", None)

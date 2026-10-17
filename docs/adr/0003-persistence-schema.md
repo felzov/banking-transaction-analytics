@@ -1,6 +1,6 @@
 # ADR 0003 — Persistence: ownership in the schema, CHECK over ENUM, isolated test databases
 
-- Status: Accepted
+- Status: Accepted; the file-hash uniqueness rule is superseded by ADR 0004 (migration 0002)
 - Date: 2026-10-16
 
 ## Context
@@ -98,7 +98,7 @@ deduplication in Phase 4, a second transaction source (ledger) in Phase 7.
 
 - `UNIQUE (owner_id, account_id, file_sha256)` also blocks re-uploading a file whose import
   *failed*. Phase 3 must reuse the failed job, or Phase 4 replaces the constraint with a partial
-  unique index (`WHERE status <> 'failed'`).
+  unique index (`WHERE status <> 'failed'`). → Resolved in ADR 0004: partial unique index.
 - The schema cannot stop one CSV row from being stored both as a transaction and as a row error,
   nor check that job counters equal the stored rows; both need triggers. The import service owns
   these invariants (Phase 3) and must test them.
@@ -113,11 +113,11 @@ deduplication in Phase 4, a second transaction source (ledger) in Phase 7.
 
 ## Notes for later phases
 
-- **Phase 3:** set `started_at` / `finished_at` with the database clock (`now()`), not the app
-  clock: a backwards step of the app clock between start and finish would violate
-  `ck_import_jobs_finished_after_started` and leave the job stuck in `processing`.
-- **Phase 3:** validate account names in the domain (the CHECK only trims spaces, so a name of
-  tabs or a no-break space passes), then tighten the CHECK to match.
+- **Phase 3 (done, ADR 0004):** set `started_at` / `finished_at` with the database clock
+  (`now()`), not the app clock: a backwards step of the app clock between start and finish would
+  violate `ck_import_jobs_finished_after_started` and leave the job stuck in `processing`.
+- **Phase 3 (done, migration 0002):** validate account names in the domain (the CHECK only trims
+  spaces, so a name of tabs or a no-break space passes), then tighten the CHECK to match.
 - **Phase 8:** `migrations/env.py` calls `fileConfig(alembic.ini)`. If the app runs migrations
   programmatically, that reconfigures the root logger (level, stderr handler); pass a config
   without logging sections or skip `fileConfig` in that path.

@@ -22,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Dialect,
     ForeignKeyConstraint,
+    Index,
     Integer,
     MetaData,
     Text,
@@ -45,6 +46,10 @@ NAMING_CONVENTION = {
     "ck": "ck_%(table_name)s_%(constraint_name)s",
     "ix": "ix_%(table_name)s_%(column_0_N_name)s",
 }
+
+
+# A unique index, not a constraint (it is partial); the import service maps its violations.
+ACTIVE_FILE_INDEX = "uq_import_jobs_active_file_sha256"
 
 
 class TextEnum[E: StrEnum](TypeDecorator[E]):
@@ -99,7 +104,16 @@ class ImportJob(Base):
             name="account",
             ondelete="RESTRICT",
         ),
-        UniqueConstraint("owner_id", "account_id", "file_sha256"),
+        # One live import per file and account. Failed attempts are excluded so the same file
+        # can be uploaded again after a failure; they stay as history (ADR 0004).
+        Index(
+            ACTIVE_FILE_INDEX,
+            "owner_id",
+            "account_id",
+            "file_sha256",
+            unique=True,
+            postgresql_where=text("status <> 'failed'"),
+        ),
         # Targets for the composite foreign keys from transactions and import_row_errors.
         UniqueConstraint("owner_id", "id"),
         UniqueConstraint("owner_id", "account_id", "id"),

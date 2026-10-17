@@ -12,10 +12,11 @@ Only the exception class name and constraint_name are safe to log.
 """
 
 import pytest
-from factories import account, completed, constraint_name, transaction
+from factories import account, completed, transaction
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from transaction_analytics.data.errors import constraint_name
 from transaction_analytics.data.models import ImportJob
 
 pytestmark = pytest.mark.integration
