@@ -5,22 +5,32 @@
 - Each test runs in one outer transaction that is rolled back; the session uses savepoints, so
   test code may flush, commit and catch IntegrityError without leaking rows into other tests.
 - Engines use NullPool and live for one test, so no connection outlives its event loop.
+- API tests call the app in-process through httpx.ASGITransport, on the test's event loop, with
+  the request session replaced by the test session. starlette's TestClient would run the app on
+  another event loop, where the asyncpg connection of the test session cannot be used.
 """
 
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from factories import OWNER_ID
+from fastapi import FastAPI
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL, make_url, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.pool import NullPool
 
+from transaction_analytics.api.deps import get_import_limits, get_owner_id, get_session
 from transaction_analytics.data.db import create_engine
+from transaction_analytics.domain.csv_parser import DEFAULT_MAX_BYTES, DEFAULT_MAX_ROWS
+from transaction_analytics.main import create_app
+from transaction_analytics.services.imports import ImportLimits
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -129,3 +139,35 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
             await outer.rollback()
+
+
+@pytest.fixture
+def app(session: AsyncSession) -> FastAPI:
+    """The real app, acting as OWNER_ID with default limits. Tests may change the overrides."""
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_owner_id] = lambda: OWNER_ID
+    app.dependency_overrides[get_import_limits] = lambda: ImportLimits(
+        max_bytes=DEFAULT_MAX_BYTES, max_rows=DEFAULT_MAX_ROWS
+    )
+    return app
+
+
+@pytest.fixture
+async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    # raise_app_exceptions (default True): an exception escaping the app fails the test, which is
+    # what the server would otherwise log with its full text.
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+@pytest.fixture
+def committed_database_url(empty_database_url: URL) -> str:
+    """A separate, migrated database for tests that need real COMMITs between sessions.
+
+    The shared database isolates tests by rolling back one outer transaction, so concurrency and
+    "visible after commit" cannot be tested there. Synchronous: alembic runs asyncio.run().
+    """
+    command.upgrade(_alembic_config(empty_database_url), "head")
+    return _url_string(empty_database_url)

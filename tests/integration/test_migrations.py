@@ -65,3 +65,42 @@ def test_models_match_migrations(empty_database_url: URL, migration_config: Conf
     )
 
     assert diff == []
+
+
+def _import_job_uniques(connection: Connection) -> tuple[set[str], set[str]]:
+    inspector = inspect(connection)
+    constraints = {uc["name"] for uc in inspector.get_unique_constraints("import_jobs")}
+    unique_indexes = {
+        ix["name"]
+        for ix in inspector.get_indexes("import_jobs")
+        if ix["unique"] and not ix.get("duplicates_constraint")
+    }
+    return constraints, unique_indexes
+
+
+def _account_name_check(connection: Connection) -> str:
+    (check,) = [
+        ck
+        for ck in inspect(connection).get_check_constraints("accounts")
+        if ck["name"] == "ck_accounts_name_valid"
+    ]
+    return check["sqltext"]
+
+
+def test_downgrade_of_0002_restores_the_0001_schema(
+    empty_database_url: URL, migration_config: Config
+) -> None:
+    command.upgrade(migration_config, "head")
+    constraints, unique_indexes = _run_sync(empty_database_url, _import_job_uniques)
+    assert "uq_import_jobs_active_file_sha256" in unique_indexes
+    assert "uq_import_jobs_owner_id_account_id_file_sha256" not in constraints
+    assert "[[:cntrl:]]" in _run_sync(empty_database_url, _account_name_check)
+
+    command.downgrade(migration_config, "0001")
+
+    constraints, unique_indexes = _run_sync(empty_database_url, _import_job_uniques)
+    assert "uq_import_jobs_owner_id_account_id_file_sha256" in constraints
+    assert "uq_import_jobs_active_file_sha256" not in unique_indexes
+    old_check = _run_sync(empty_database_url, _account_name_check)
+    assert "btrim(name) <> ''" in old_check
+    assert "[[:cntrl:]]" not in old_check

@@ -1,4 +1,4 @@
-"""Engine and session factories. Nothing is created at import time; Phase 3 wires them in."""
+"""Engine and session factories. Nothing is created at import time; main.py lifespan wires them."""
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,

@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy import Table, Uuid
 
-from transaction_analytics.data.models import Base
+from transaction_analytics.data.models import ACTIVE_FILE_INDEX, Base
 
 TABLES = sorted(Base.metadata.tables.values(), key=lambda table: table.name)
 POSTGRES_MAX_IDENTIFIER_LENGTH = 63
@@ -32,7 +32,16 @@ def test_every_foreign_key_includes_owner_id(table: Table) -> None:
 
 
 @pytest.mark.parametrize("table", TABLES, ids=lambda table: table.name)
-def test_constraints_have_explicit_short_names(table: Table) -> None:
-    for constraint in table.constraints:
-        assert constraint.name, f"unnamed constraint on {table.name}"
-        assert len(str(constraint.name)) <= POSTGRES_MAX_IDENTIFIER_LENGTH, constraint.name
+def test_constraints_and_indexes_have_explicit_short_names(table: Table) -> None:
+    for item in [*table.constraints, *table.indexes]:
+        assert item.name, f"unnamed constraint or index on {table.name}"
+        assert len(str(item.name)) <= POSTGRES_MAX_IDENTIFIER_LENGTH, item.name
+
+
+def test_active_file_index_is_unique_and_partial() -> None:
+    (index,) = Base.metadata.tables["import_jobs"].indexes
+
+    assert index.name == ACTIVE_FILE_INDEX
+    assert index.unique
+    assert [column.name for column in index.columns] == ["owner_id", "account_id", "file_sha256"]
+    assert str(index.dialect_options["postgresql"]["where"]) == "status <> 'failed'"

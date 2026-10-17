@@ -34,10 +34,27 @@ class FileErrorCode(StrEnum):
     NO_DATA_ROWS = "no_data_rows"
 
 
+class AccountErrorCode(StrEnum):
+    """Why an account name is invalid. Separate from FieldErrorCode, which mirrors a CHECK."""
+
+    NAME_REQUIRED = "name_required"
+    NAME_TOO_LONG = "name_too_long"
+    NAME_INVALID_CHARACTERS = "name_invalid_characters"
+
+
 class FieldValidationError(ValueError):
     """A single value failed validation. Carries a stable code, not the raw value."""
 
     def __init__(self, code: FieldErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class AccountValidationError(ValueError):
+    """An account name failed validation. Carries a stable code, not the raw value."""
+
+    def __init__(self, code: AccountErrorCode, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message

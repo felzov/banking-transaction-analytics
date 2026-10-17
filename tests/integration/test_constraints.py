@@ -18,7 +18,6 @@ from factories import (
     STARTED,
     account,
     completed,
-    constraint_name,
     failed,
     job,
     row_error,
@@ -29,6 +28,7 @@ from sqlalchemy import delete, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from transaction_analytics.data.errors import constraint_name
 from transaction_analytics.data.models import Account, Base, ImportJob
 from transaction_analytics.domain.csv_parser import REQUIRED_COLUMNS
 from transaction_analytics.domain.errors import FieldErrorCode
@@ -67,6 +67,12 @@ VIOLATIONS: list[tuple[str, Build, str]] = [
     # accounts
     ("account: blank name", lambda w: [account(name="   ")], "ck_accounts_name_valid"),
     ("account: name > 100", lambda w: [account(name="x" * 101)], "ck_accounts_name_valid"),
+    ("account: empty name", lambda w: [account(name="")], "ck_accounts_name_valid"),
+    ("account: leading space", lambda w: [account(name=" Current")], "ck_accounts_name_valid"),
+    ("account: trailing space", lambda w: [account(name="Current ")], "ck_accounts_name_valid"),
+    ("account: tabs only", lambda w: [account(name="\t\t")], "ck_accounts_name_valid"),
+    ("account: inner newline", lambda w: [account(name="Cur\nrent")], "ck_accounts_name_valid"),
+    ("account: control character", lambda w: [account(name="Cur\x07")], "ck_accounts_name_valid"),
     # import_jobs: values
     (
         "job: unknown status",
@@ -173,7 +179,7 @@ VIOLATIONS: list[tuple[str, Build, str]] = [
     (
         "job: same file again for the same account",
         lambda w: [job(w.acc, file_sha256=w.job.file_sha256)],
-        "uq_import_jobs_owner_id_account_id_file_sha256",
+        "uq_import_jobs_active_file_sha256",
     ),
     # transactions: values
     (
@@ -295,6 +301,31 @@ async def test_same_file_is_allowed_for_another_account_and_another_owner(
     await session.flush()
 
 
+async def test_failed_imports_do_not_block_the_same_file(
+    session: AsyncSession, world: World
+) -> None:
+    # ADR 0004: failed attempts stay as history and the file can be uploaded again.
+    sha = sha256_hex(7)
+    session.add_all([failed(world.acc2, file_sha256=sha), failed(world.acc2, file_sha256=sha)])
+    await session.flush()
+    session.add(completed(world.acc2, file_sha256=sha))
+    await session.flush()
+
+    with pytest.raises(IntegrityError) as exc:
+        async with session.begin_nested():
+            session.add(completed(world.acc2, file_sha256=sha))
+            await session.flush()
+
+    assert constraint_name(exc.value) == "uq_import_jobs_active_file_sha256"
+
+
+async def test_account_name_the_domain_accepts_is_stored(session: AsyncSession) -> None:
+    # ADR 0003 item 13: emoji with a zero-width joiner and an RTL mark are format characters (Cf),
+    # kept by the domain, so the CHECK must accept them too.
+    session.add(account(name="Family \U0001f468\u200d\U0001f469 \u200f\u062d\u0633\u0627\u0628"))
+    await session.flush()
+
+
 async def test_a_row_can_be_both_a_transaction_and_an_error(
     session: AsyncSession, world: World
 ) -> None:
@@ -377,6 +408,15 @@ async def test_every_status_check_is_listed(session: AsyncSession) -> None:
     mentioning_status = {name for name, definition in rows if re.search(r"\bstatus\b", definition)}
 
     assert mentioning_status == set(STATUS_CHECKS)
+
+
+async def test_active_file_index_predicate_matches_the_domain(session: AsyncSession) -> None:
+    definition = await session.scalar(
+        text("SELECT pg_get_indexdef('uq_import_jobs_active_file_sha256'::regclass)")
+    )
+    assert definition is not None
+    assert "UNIQUE" in definition
+    assert set(re.findall(r"'([^']*)'::text", definition)) == {str(ImportStatus.FAILED)}
 
 
 @pytest.mark.parametrize(("constraint", "statuses"), STATUS_CHECKS.items())
