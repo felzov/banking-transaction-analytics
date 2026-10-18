@@ -1,6 +1,6 @@
 # ADR 0004 — Import pipeline: synchronous, one transaction, partial import
 
-- Status: Accepted
+- Status: Accepted; item 3 amended by ADR 0006 item 6 (duplicate_rows is set after the insert)
 - Date: 2026-10-17
 
 ## Context
@@ -30,6 +30,9 @@ completed jobs own transactions). Files are at most 5 MiB / 50 000 rows.
    `pending` and `processing` stay in the schema for a future asynchronous mode; nothing writes
    them now. `started_at` and `finished_at` are both `now()` (the database clock, ADR 0003),
    i.e. the start of the import transaction; they do not measure duration.
+   *Amended by ADR 0006:* `duplicate_rows` is known only after the transactions are inserted, so
+   it is set by an UPDATE in the same transaction. Nothing outside the transaction sees the job
+   without it.
 4. **Partial import, no threshold.** Valid rows are stored and every invalid row is reported,
    as ADR 0002 intends. A file whose rows are all invalid still completes, with `valid_rows = 0`,
    so the user sees each row error rather than one generic failure.
@@ -54,7 +57,8 @@ completed jobs own transactions). Files are at most 5 MiB / 50 000 rows.
    a `failed` job with `internal_error`, and the client gets 500 with that import's id. Logs get
    only the driver exception class and constraint name (ADR 0003, item 10). If recording the
    failure fails too, the client still gets 500, without an id.
-8. **Rows are inserted in batches of 1 000 per INSERT call.** One call for 50 000 rows made
+8. **Rows are inserted in batches per INSERT call** (1 000; 250 since ADR 0006 item 4, which
+   inserts in key order). One call for 50 000 rows made
    SQLAlchemy prepare every parameter set in one step on the event loop: measured stall 0.42 s for
    all concurrent requests. With batches the longest stall measured is 0.02 s; total time is
    unchanged (~3.8 s for 50 000 rows, local).
@@ -68,11 +72,8 @@ completed jobs own transactions). Files are at most 5 MiB / 50 000 rows.
 
 ## Consequences
 
-- **Re-importing a corrected file duplicates its valid rows** until deduplication exists
-  (Phase 4): a file with errors is partly imported; the fixed file has a different hash, so its
-  previously valid rows are imported again. Documented in the README.
-- The same statement with and without a UTF-8 BOM hashes differently and is not a duplicate.
-  Row-level deduplication (Phase 4) covers it.
+- ~~Re-importing a corrected file duplicates its valid rows~~ and ~~the same statement with and
+  without a UTF-8 BOM is not a duplicate~~: resolved by row-level deduplication (ADR 0006).
 - The client waits for the whole import: about 4 s for 50 000 rows locally (no connection is held
   during the parse, only during the insert). If real files are slower, move to an asynchronous
   job (the `pending`/`processing` states exist for that).

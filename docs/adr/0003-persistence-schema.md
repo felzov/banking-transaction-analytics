@@ -49,6 +49,8 @@ deduplication in Phase 4, a second transaction source (ledger) in Phase 7.
 7. **Indexes: only those implied by primary keys and unique constraints.** The FK
    `transactions → accounts` has no child-side index; it only matters for deleting an account,
    which nothing does. Dedup (Phase 4) and analytics (Phase 6) add indexes for their real queries.
+   → Phase 4 added `uq_transactions_dedup (owner_id, account_id, fingerprint, occurrence)`
+   (ADR 0006).
 8. **Constraint names are deterministic** (naming convention in `data/models.py`, `op.f()` in
    migrations). Tests assert which constraint fired; Phase 3 maps violations to safe messages by
    `constraint_name`.

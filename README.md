@@ -4,7 +4,7 @@
 
 Import, validate, normalize, deduplicate and analyze bank-statement transactions.
 
-**Status: early development (Phase 3 of 8).** What exists today:
+**Status: early development (Phase 4 of 8).** What exists today:
 
 - `/health` liveness endpoint (FastAPI).
 - A pure, fully unit-tested domain layer: a CSV statement parser that returns valid transactions
@@ -15,8 +15,11 @@ Import, validate, normalize, deduplicate and analyze bank-statement transactions
 - An HTTP API to create accounts, upload a statement CSV and read the import result and its
   row errors ([ADR 0004](docs/adr/0004-import-pipeline.md),
   [ADR 0005](docs/adr/0005-api-conventions.md)).
+- Deduplication on re-import: rows an account already holds are skipped and counted, so corrected,
+  overlapping or re-saved statements can be uploaded safely
+  ([ADR 0006](docs/adr/0006-deduplication.md)).
 
-Not built yet: deduplication, authentication, analytics, listing transactions.
+Not built yet: authentication, analytics, listing transactions.
 The target users (accountants, bookkeepers, freelancers, small businesses) are hypotheses that
 have **not** been validated.
 
@@ -62,7 +65,7 @@ curl -s -X POST localhost:8000/accounts -H 'Content-Type: application/json' \
 curl -s -X POST localhost:8000/accounts/<account_id>/imports \
   -H 'Content-Type: text/csv' --data-binary @tests/fixtures/statement_mixed_errors.csv
 # -> 201 {"id": "<import_id>", "status": "completed", "total_rows": 8, "valid_rows": 2,
-#         "invalid_rows": 6, "error": null, ...}
+#         "invalid_rows": 6, "duplicate_rows": 0, "imported_rows": 2, "error": null, ...}
 
 curl -s localhost:8000/imports/<import_id>
 curl -s 'localhost:8000/imports/<import_id>/errors?limit=100'   # page with after_row=<next_after_row>
@@ -80,6 +83,11 @@ Interactive docs: http://127.0.0.1:8000/docs.
 
 - The import runs synchronously in the request. Valid rows are stored and every invalid row is
   reported; there is no error threshold.
+- Rows the account already holds are not stored again (ADR 0006). A row is the same when date,
+  amount, currency and description match (description ignoring case and extra spaces). Identical
+  rows inside one file are kept: if a file has a row 3 times and the account holds it twice, one
+  is added. `duplicate_rows` counts the skipped rows; `imported_rows = valid_rows - duplicate_rows`
+  were stored.
 - The same file (same bytes) cannot be imported twice into one account: 409 with the existing
   `import_id`. A file whose import **failed** can be uploaded again; if it is rejected again
   with the same error, the earlier failed import is returned (200) instead of a new one.
@@ -148,7 +156,8 @@ Codes are defined in `src/transaction_analytics/domain/errors.py`.
 
 ```text
 src/transaction_analytics/
-  domain/      pure logic: money, field rules, CSV parser, account names, import outcome (no I/O)
+  domain/      pure logic (no I/O): money, field rules, CSV parser, dedup keys, account names,
+               import outcome
   data/        SQLAlchemy models, engine/session factories, owner-scoped queries, DB error helpers
   services/    use cases and transaction boundaries (accounts, imports)
   api/         FastAPI routers (thin), dependencies, schemas, error handling
@@ -167,10 +176,11 @@ docs/adr/      architecture decision records
 
 - One CSV dialect. Real bank exports (UK `DD/MM/YYYY` dates, separate debit/credit columns,
   `1,234.56` amounts) need explicit format adapters; none exist yet.
-- Identical-looking rows are all kept. Deduplication across imports is planned for Phase 4.
-- **Re-uploading a corrected file duplicates rows** until Phase 4: a file with row errors is
-  partly imported, and the fixed file has a different hash, so its valid rows are stored again.
-  Likewise, the same file with and without a UTF-8 BOM is not detected as a duplicate.
+- Deduplication is exact (ADR 0006). If a correction changes a row that was already valid (a typo
+  in the amount or description), the old row stays and the corrected one is added. If one day is
+  split across two exports and each part has a different but identical-looking transaction, the
+  second is skipped as a duplicate.
+- Duplicates stored before Phase 4 (migration 0003) stay.
 - The parser holds the whole file in memory (bounded by the 5 MiB limit).
 - No authentication. Every request acts as one configured owner (`DEV_OWNER_ID`) until Phase 5.
 - Imports are synchronous: the client waits while the file is parsed and stored (about 4 s for
@@ -192,3 +202,4 @@ docs/adr/      architecture decision records
 - [ADR 0003 — Persistence: ownership in the schema, CHECK over ENUM, isolated test databases](docs/adr/0003-persistence-schema.md)
 - [ADR 0004 — Import pipeline: synchronous, one transaction, partial import](docs/adr/0004-import-pipeline.md)
 - [ADR 0005 — API conventions: error envelope, no echoed values, placeholder owner](docs/adr/0005-api-conventions.md)
+- [ADR 0006 — Deduplication: exact keys, multiset union, enforced by a unique constraint](docs/adr/0006-deduplication.md)
