@@ -82,6 +82,7 @@ async def test_valid_statement_is_imported(
     body = response.json()
     assert body["status"] == "completed"
     assert (body["total_rows"], body["valid_rows"], body["invalid_rows"]) == (5, 5, 0)
+    assert (body["duplicate_rows"], body["imported_rows"]) == (0, 5)
     assert body["error"] is None
     assert body["account_id"] == account_id
     assert body["started_at"] is not None
@@ -171,7 +172,8 @@ async def test_invariants_counts_match_rows_and_rows_are_disjoint(
         )
     )
 
-    assert len(transaction_rows) == body["valid_rows"]
+    assert len(transaction_rows) == body["imported_rows"] == body["valid_rows"]
+    assert body["duplicate_rows"] == 0
     assert len(error_rows) == body["invalid_rows"]
     assert transaction_rows.isdisjoint(error_rows)
     assert transaction_rows | error_rows == set(range(2, 2 + body["total_rows"]))
@@ -217,6 +219,7 @@ async def test_rejected_file_creates_a_failed_import_without_rows(
     assert body["error"]["code"] == code
     assert body["error"]["message"]
     assert (body["total_rows"], body["valid_rows"], body["invalid_rows"]) == (0, 0, 0)
+    assert (body["duplicate_rows"], body["imported_rows"]) == (0, 0)
     assert body["finished_at"] is not None
     assert await count(session, Transaction) == 0
     assert await count(session, ImportRowError) == 0
@@ -307,6 +310,56 @@ async def test_same_file_twice_is_a_conflict(
     assert second.json()["error"]["import_id"] == first["id"]
     assert await count(session, ImportJob) == 1
     assert await count(session, Transaction) == first["valid_rows"]
+
+
+async def test_overlapping_statement_reports_its_duplicates(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    # ADR 0006: rows the account already holds are skipped and counted, not stored again.
+    account_id = await new_account(client)
+    await upload(client, account_id, HEADER + b"2026-09-01,Rent,-950.00,GBP\n")
+    overlapping = HEADER + b"2026-09-01,Rent,-950.00,GBP\n2026-09-02,Books,-12.00,GBP\n"
+
+    response = await upload(client, account_id, overlapping)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    assert (body["valid_rows"], body["duplicate_rows"], body["imported_rows"]) == (2, 1, 1)
+    assert (await client.get(f"/imports/{body['id']}")).json() == body
+    assert await count(session, Transaction, import_job_id=uuid.UUID(body["id"])) == 1
+    assert await count(session, Transaction) == 2
+
+
+async def test_same_statement_with_a_bom_imports_nothing_new(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    # Different bytes, so no file-level 409; every row is a duplicate instead.
+    account_id = await new_account(client)
+    await upload(client, account_id, VALID)
+
+    response = await upload(client, account_id, b"\xef\xbb\xbf" + VALID)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert (body["valid_rows"], body["duplicate_rows"], body["imported_rows"]) == (5, 5, 0)
+    assert await count(session, Transaction) == 5
+
+
+async def test_default_row_limit_is_re_importable(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    # Every row conflicts on the dedup constraint: the worst case for ON CONFLICT DO NOTHING.
+    # Rough timing in `pytest --durations` (ADR 0006).
+    rows = b"".join(b"2026-09-01,Row %d,-1.00,GBP\n" % index for index in range(DEFAULT_MAX_ROWS))
+    account_id = await new_account(client)
+    await upload(client, account_id, HEADER + rows)
+
+    response = await upload(client, account_id, b"\xef\xbb\xbf" + HEADER + rows)
+
+    body = response.json()
+    assert (body["duplicate_rows"], body["imported_rows"]) == (DEFAULT_MAX_ROWS, 0)
+    assert await count(session, Transaction) == DEFAULT_MAX_ROWS
 
 
 async def test_same_file_into_another_account_is_allowed(client: httpx.AsyncClient) -> None:

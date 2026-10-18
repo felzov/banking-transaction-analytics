@@ -42,6 +42,9 @@ class ImportOut(BaseModel):
     total_rows: int
     valid_rows: int
     invalid_rows: int
+    # Valid rows the account already held, skipped (ADR 0006); the rest were stored.
+    duplicate_rows: int
+    imported_rows: int
     error: ImportFailureOut | None
     created_at: datetime
     started_at: datetime | None
@@ -59,6 +62,8 @@ class ImportOut(BaseModel):
             total_rows=job.total_rows,
             valid_rows=job.valid_rows,
             invalid_rows=job.invalid_rows,
+            duplicate_rows=job.duplicate_rows,
+            imported_rows=job.valid_rows - job.duplicate_rows,
             error=error,
             created_at=job.created_at,
             started_at=job.started_at,
