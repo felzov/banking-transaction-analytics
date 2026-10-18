@@ -3,15 +3,20 @@
 1. The account must belong to the owner.
 2. The file is hashed and parsed before anything is written, in a worker thread (CPU-bound work
    would block the event loop) and with no transaction open (no pooled connection is held).
-3. One transaction inserts the job in its final state, then its transactions and row errors.
-   Job and rows commit together, so the counters always equal the stored rows, a CSV row is
-   stored either as a transaction or as an error (the parser puts it in exactly one list), and
-   only completed jobs own transactions (ADR 0003 "Known consequences").
+3. One transaction inserts the job in its final state (except duplicate_rows, item 6), then its
+   transactions and row errors.
+   Job and rows commit together, so the counters always match the stored rows, a CSV row is
+   either valid (stored, or skipped as a duplicate) or an error, never both (the parser puts it
+   in exactly one list), and only completed jobs own transactions (ADR 0003 "Known
+   consequences").
 4. An unexpected database error rolls everything back and records the job as failed with
    internal_error in a second, short transaction.
 5. A rejected file that was already rejected with the same error code returns that failed job
    instead of adding another one: the outcome is deterministic, and a retry loop would otherwise
    grow the table without bound. A different outcome (e.g. after a limit change) is a new job.
+6. Valid rows the account already holds are skipped by the database (ADR 0006). How many were
+   skipped is known only after the insert, so the job's duplicate_rows is set then, in the same
+   transaction: stored transactions always equal valid_rows - duplicate_rows.
 """
 
 import asyncio
@@ -27,7 +32,8 @@ from transaction_analytics.data import accounts as accounts_data
 from transaction_analytics.data import imports as imports_data
 from transaction_analytics.data.errors import constraint_name, error_kind
 from transaction_analytics.data.models import ACTIVE_FILE_INDEX, ImportJob, ImportRowError
-from transaction_analytics.domain.csv_parser import ParseResult, parse_statement_csv
+from transaction_analytics.domain.csv_parser import RowError, parse_statement_csv
+from transaction_analytics.domain.dedup import DedupRow, assign_occurrences
 from transaction_analytics.domain.errors import FileRejectedError
 from transaction_analytics.domain.imports import (
     ImportOutcome,
@@ -59,6 +65,16 @@ class ImportResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _ParsedFile:
+    """A parsed file, ready to store. Each valid row is held once, inside its DedupRow."""
+
+    outcome: ImportOutcome
+    # The valid rows with their dedup keys, already in insert order (sorting is CPU work too).
+    rows: list[DedupRow]
+    errors: list[RowError]
+
+
+@dataclass(frozen=True, slots=True)
 class RowErrorPage:
     items: list[ImportRowError]
     # Pass as after_row to get the next page; None when this is the last page.
@@ -87,15 +103,15 @@ async def import_statement(
     await session.rollback()
 
     file_sha256, parsed = await asyncio.to_thread(_hash_and_parse, content, limits)
-    result: ParseResult | None = None
+    parsed_file: _ParsedFile | None = None
     if isinstance(parsed, FileRejectedError):
         outcome = rejected_outcome(parsed)
     else:
-        result = parsed
-        outcome = completed_outcome(result)
+        parsed_file = parsed
+        outcome = parsed_file.outcome
 
     try:
-        if result is None and outcome.error_code is not None:
+        if parsed_file is None and outcome.error_code is not None:
             previous = await imports_data.find_failed_job(
                 session,
                 owner_id=owner_id,
@@ -106,11 +122,15 @@ async def import_statement(
             if previous is not None:
                 return ImportResult(job=previous, created=False)
         job = await _insert_job(session, owner_id, account_id, file_sha256, outcome)
-        if result is not None:
-            await imports_data.insert_transactions(
-                session, job=job, transactions=result.transactions
+        if parsed_file is not None:
+            inserted = await imports_data.insert_transactions(
+                session, job=job, rows=parsed_file.rows
             )
-            await imports_data.insert_row_errors(session, job=job, errors=result.errors)
+            if inserted < len(parsed_file.rows):
+                await imports_data.set_duplicate_rows(
+                    session, job=job, duplicate_rows=len(parsed_file.rows) - inserted
+                )
+            await imports_data.insert_row_errors(session, job=job, errors=parsed_file.errors)
         await session.commit()
     except DBAPIError as exc:
         # Only the class name and the constraint name are safe to log (ADR 0003, item 10).
@@ -125,14 +145,19 @@ async def import_statement(
 
 def _hash_and_parse(
     content: bytes, limits: ImportLimits
-) -> tuple[str, ParseResult | FileRejectedError]:
-    """CPU-bound work; runs in a worker thread so the event loop keeps serving other requests."""
+) -> tuple[str, _ParsedFile | FileRejectedError]:
+    """CPU-bound work (including one hash per row and the insert-order sort); runs in a worker
+    thread so the event loop keeps serving other requests."""
     file_sha256 = hashlib.sha256(content).hexdigest()
     try:
         result = parse_statement_csv(content, max_bytes=limits.max_bytes, max_rows=limits.max_rows)
     except FileRejectedError as exc:
         return file_sha256, exc
-    return file_sha256, result
+    return file_sha256, _ParsedFile(
+        outcome=completed_outcome(result),
+        rows=imports_data.in_insert_order(assign_occurrences(result.transactions)),
+        errors=result.errors,
+    )
 
 
 async def _insert_job(

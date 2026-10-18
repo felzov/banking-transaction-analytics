@@ -24,6 +24,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     Text,
     TypeDecorator,
@@ -50,6 +51,8 @@ NAMING_CONVENTION = {
 
 # A unique index, not a constraint (it is partial); the import service maps its violations.
 ACTIVE_FILE_INDEX = "uq_import_jobs_active_file_sha256"
+# Named explicitly (the convention would list four columns); inserts skip rows that hit it.
+DEDUP_CONSTRAINT = "uq_transactions_dedup"
 
 
 class TextEnum[E: StrEnum](TypeDecorator[E]):
@@ -129,6 +132,8 @@ class ImportJob(Base):
     total_rows: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     valid_rows: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     invalid_rows: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    # Valid rows the account already had (ADR 0006); valid_rows - duplicate_rows were stored.
+    duplicate_rows: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     error_code: Mapped[ImportFailureCode | None] = mapped_column(TextEnum(ImportFailureCode))
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
@@ -155,6 +160,11 @@ class Transaction(Base):
             ondelete="RESTRICT",
         ),
         UniqueConstraint("import_job_id", "row_number"),
+        # An account holds each (key, occurrence) once, so a re-imported row is skipped
+        # (domain/dedup.py, ADR 0006).
+        UniqueConstraint(
+            "owner_id", "account_id", "fingerprint", "occurrence", name=DEDUP_CONSTRAINT
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -167,6 +177,9 @@ class Transaction(Base):
     normalized_description: Mapped[str] = mapped_column(Text)
     amount_minor: Mapped[int] = mapped_column(BigInteger)
     currency: Mapped[Currency] = mapped_column(TextEnum(Currency))
+    # SHA-256 of the dedup key and the k-th row with that key in the account (ADR 0006).
+    fingerprint: Mapped[bytes] = mapped_column(LargeBinary)
+    occurrence: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = _created_at()
 
 

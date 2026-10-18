@@ -1,9 +1,9 @@
 """Schema guards that need no database. Constraint behaviour is tested in tests/integration/."""
 
 import pytest
-from sqlalchemy import Table, Uuid
+from sqlalchemy import Table, UniqueConstraint, Uuid
 
-from transaction_analytics.data.models import ACTIVE_FILE_INDEX, Base
+from transaction_analytics.data.models import ACTIVE_FILE_INDEX, DEDUP_CONSTRAINT, Base
 
 TABLES = sorted(Base.metadata.tables.values(), key=lambda table: table.name)
 POSTGRES_MAX_IDENTIFIER_LENGTH = 63
@@ -45,3 +45,16 @@ def test_active_file_index_is_unique_and_partial() -> None:
     assert index.unique
     assert [column.name for column in index.columns] == ["owner_id", "account_id", "file_sha256"]
     assert str(index.dialect_options["postgresql"]["where"]) == "status <> 'failed'"
+
+
+def test_dedup_constraint_is_owner_scoped_per_occurrence() -> None:
+    table = Base.metadata.tables["transactions"]
+    (constraint,) = [c for c in table.constraints if c.name == DEDUP_CONSTRAINT]
+
+    assert isinstance(constraint, UniqueConstraint)
+    assert [column.name for column in constraint.columns] == [
+        "owner_id",
+        "account_id",
+        "fingerprint",
+        "occurrence",
+    ]

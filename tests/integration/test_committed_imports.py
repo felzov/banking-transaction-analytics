@@ -20,11 +20,17 @@ from transaction_analytics.data import accounts as accounts_data
 from transaction_analytics.data import imports as imports_data
 from transaction_analytics.data.db import create_engine, create_sessionmaker
 from transaction_analytics.data.models import ImportJob, Transaction
-from transaction_analytics.domain.csv_parser import ParsedTransaction, ParseResult
+from transaction_analytics.domain.csv_parser import (
+    ParsedTransaction,
+    ParseResult,
+    parse_statement_csv,
+)
+from transaction_analytics.domain.dedup import assign_occurrences
 from transaction_analytics.domain.imports import (
     ImportFailureCode,
     ImportOutcome,
     ImportStatus,
+    completed_outcome,
 )
 from transaction_analytics.domain.money import Currency
 from transaction_analytics.services import imports as import_service
@@ -160,3 +166,118 @@ async def test_no_pooled_connection_is_held_while_parsing(
         )
 
     assert checked_out == [0]
+
+
+HEADER = b"date,description,amount,currency\n"
+RENT = b"2026-09-01,Rent,-950.00,GBP\n"
+COFFEE = b"2026-09-03,Coffee Shop,-3.20,GBP\n"
+BOOKS = b"2026-09-04,Books,-12.00,GBP\n"
+
+
+async def _hold_uncommitted_import(
+    session: AsyncSession, account_id: uuid.UUID, content: bytes
+) -> None:
+    """The first import's writes, left uncommitted so a concurrent import has to wait on them."""
+    result = parse_statement_csv(content)
+    job = await imports_data.insert_job(
+        session,
+        owner_id=OWNER_ID,
+        account_id=account_id,
+        file_sha256=hashlib.sha256(content).hexdigest(),
+        outcome=completed_outcome(result),
+    )
+    await imports_data.insert_transactions(
+        session, job=job, rows=assign_occurrences(result.transactions)
+    )
+
+
+@pytest.mark.parametrize(("first_commits", "expected_duplicates"), [(True, 1), (False, 0)])
+async def test_concurrent_overlapping_imports_store_each_row_once(
+    scratch_engine: AsyncEngine,
+    sessions: async_sessionmaker[AsyncSession],
+    account_id: uuid.UUID,
+    first_commits: bool,
+    expected_duplicates: int,
+) -> None:
+    # Two different files (no file-level conflict) share the Coffee row. The second import must
+    # wait for the first's uncommitted Coffee, then skip it if the first commits, or insert it if
+    # the first rolls back. A check-then-insert would store Coffee twice here.
+    async with sessions() as first, sessions() as second:
+        await _hold_uncommitted_import(first, account_id, HEADER + RENT + COFFEE)
+        racing = asyncio.create_task(
+            import_service.import_statement(
+                second,
+                owner_id=OWNER_ID,
+                account_id=account_id,
+                content=HEADER + COFFEE + BOOKS,
+                limits=LIMITS,
+            )
+        )
+        await _wait_until_a_query_waits_on_a_lock(scratch_engine)
+        assert not racing.done()
+
+        await (first.commit() if first_commits else first.rollback())
+        result = await racing
+
+    assert result.job.duplicate_rows == expected_duplicates
+    async with sessions() as session:
+        coffees = await session.scalar(
+            select(func.count())
+            .select_from(Transaction)
+            .where(Transaction.normalized_description == "coffee shop")
+        )
+        assert coffees == 1
+        stored = await session.scalar(
+            select(func.count())
+            .select_from(Transaction)
+            .where(Transaction.import_job_id == result.job.id)
+        )
+        assert stored == result.job.valid_rows - result.job.duplicate_rows
+
+
+async def test_overlapping_imports_with_rows_in_opposite_order_do_not_deadlock(
+    scratch_engine: AsyncEngine,
+    sessions: async_sessionmaker[AsyncSession],
+    account_id: uuid.UUID,
+) -> None:
+    # ON CONFLICT waits on the other import's uncommitted rows, so two imports that share two
+    # keys and insert them in opposite order wait on each other: PostgreSQL aborts one with a
+    # deadlock and a valid upload ends as internal_error. Inserting in key order (fingerprint,
+    # occurrence), whatever the file order, makes every import wait in the same order.
+    shared = parse_statement_csv(HEADER + COFFEE + BOOKS)
+    low, high = sorted(assign_occurrences(shared.transactions), key=lambda row: row.fingerprint)
+    lines = {b"coffee shop": COFFEE, b"books": BOOKS}
+    high_first = (
+        lines[high.transaction.normalized_description.encode()]
+        + lines[low.transaction.normalized_description.encode()]
+    )
+
+    async with sessions() as first, sessions() as second:
+        job = await imports_data.insert_job(
+            first,
+            owner_id=OWNER_ID,
+            account_id=account_id,
+            file_sha256=hashlib.sha256(b"first").hexdigest(),
+            outcome=completed_outcome(shared),
+        )
+        await imports_data.insert_transactions(first, job=job, rows=[low])
+        racing = asyncio.create_task(
+            import_service.import_statement(
+                second,
+                owner_id=OWNER_ID,
+                account_id=account_id,
+                content=HEADER + high_first,
+                limits=LIMITS,
+            )
+        )
+        await _wait_until_a_query_waits_on_a_lock(scratch_engine)  # the second waits on `low`
+
+        # In file order the second import would already hold `high` uncommitted: a cycle.
+        await imports_data.insert_transactions(first, job=job, rows=[high])
+        await first.commit()
+        result = await racing
+
+    assert result.job.status is ImportStatus.COMPLETED
+    assert result.job.duplicate_rows == 2
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(Transaction)) == 2
