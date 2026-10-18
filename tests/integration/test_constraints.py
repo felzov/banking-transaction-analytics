@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from transaction_analytics.data.errors import constraint_name
-from transaction_analytics.data.models import Account, Base, ImportJob
+from transaction_analytics.data.models import Account, Base, ImportJob, Transaction
 from transaction_analytics.domain.csv_parser import REQUIRED_COLUMNS
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
@@ -46,6 +46,7 @@ class World:
     acc2: Account  # second account of the same owner
     other_acc: Account  # another owner's account
     job: ImportJob  # completed job on acc, with a transaction at row 2 and an error at row 3
+    tx: Transaction  # the transaction at row 2
 
 
 @pytest.fixture
@@ -56,9 +57,10 @@ async def world(session: AsyncSession) -> World:
     import_job = completed(acc, file_sha256=sha256_hex(1))
     session.add(import_job)
     await session.flush()
-    session.add_all([transaction(import_job, row_number=2), row_error(import_job, row_number=3)])
+    tx = transaction(import_job, row_number=2)
+    session.add_all([tx, row_error(import_job, row_number=3)])
     await session.flush()
-    return World(acc, acc2, other_acc, import_job)
+    return World(acc, acc2, other_acc, import_job, tx)
 
 
 Build = Callable[[World], list[Base]]
@@ -96,13 +98,25 @@ VIOLATIONS: list[tuple[str, Build, str]] = [
     ),
     (
         "job: negative count",
-        lambda w: [job(w.acc, total_rows=0, valid_rows=-1, invalid_rows=1)],
+        # On invalid_rows: a negative valid_rows also breaks duplicate_rows <= valid_rows, so it
+        # cannot isolate this rule (see test_negative_valid_rows_is_rejected).
+        lambda w: [job(w.acc, total_rows=0, valid_rows=1, invalid_rows=-1)],
         "ck_import_jobs_row_counts_non_negative",
     ),
     (
         "job: counts do not add up",
         lambda w: [job(w.acc, total_rows=3, valid_rows=1, invalid_rows=1)],
         "ck_import_jobs_row_counts_add_up",
+    ),
+    (
+        "job: negative duplicate count",
+        lambda w: [completed(w.acc, duplicate_rows=-1)],
+        "ck_import_jobs_duplicate_rows_valid",
+    ),
+    (
+        "job: more duplicates than valid rows",
+        lambda w: [completed(w.acc, valid_rows=2, duplicate_rows=3)],
+        "ck_import_jobs_duplicate_rows_valid",
     ),
     # import_jobs: failure details
     (
@@ -217,7 +231,22 @@ VIOLATIONS: list[tuple[str, Build, str]] = [
         lambda w: [transaction(w.job, row_number=9, currency="gbp")],
         "ck_transactions_currency_allowed",
     ),
+    (
+        "transaction: fingerprint is not 32 bytes",
+        lambda w: [transaction(w.job, row_number=9, fingerprint=b"x" * 31)],
+        "ck_transactions_fingerprint_length",
+    ),
+    (
+        "transaction: occurrence 0",
+        lambda w: [transaction(w.job, row_number=9, occurrence=0)],
+        "ck_transactions_occurrence_positive",
+    ),
     # transactions: ownership and uniqueness
+    (
+        "transaction: same key and occurrence again in the account",
+        lambda w: [transaction(w.job, row_number=9, fingerprint=w.tx.fingerprint)],
+        "uq_transactions_dedup",
+    ),
     (
         "transaction: account differs from its job's account",
         lambda w: [transaction(w.job, row_number=9, account_id=w.acc2.id)],
@@ -319,6 +348,24 @@ async def test_failed_imports_do_not_block_the_same_file(
     assert constraint_name(exc.value) == "uq_import_jobs_active_file_sha256"
 
 
+async def test_dedup_key_is_unique_only_per_account_and_occurrence(
+    session: AsyncSession, world: World
+) -> None:
+    # ADR 0006: the next occurrence of a key in the same account, and the same key in another
+    # account or for another owner, are all different transactions.
+    job2, other_job = completed(world.acc2), completed(world.other_acc)
+    session.add_all([job2, other_job])
+    await session.flush()
+    session.add_all(
+        [
+            transaction(world.job, row_number=9, fingerprint=world.tx.fingerprint, occurrence=2),
+            transaction(job2, fingerprint=world.tx.fingerprint),
+            transaction(other_job, fingerprint=world.tx.fingerprint),
+        ]
+    )
+    await session.flush()
+
+
 async def test_account_name_the_domain_accepts_is_stored(session: AsyncSession) -> None:
     # ADR 0003 item 13: emoji with a zero-width joiner and an RTL mark are format characters (Cf),
     # kept by the domain, so the CHECK must accept them too.
@@ -364,13 +411,40 @@ async def test_deleting_an_import_job_with_transactions_is_restricted(
     assert constraint_name(exc.value) == "fk_transactions_import_job"
 
 
-async def _literals(session: AsyncSession, constraint: str) -> set[str]:
+async def _definition(session: AsyncSession, constraint: str) -> str:
     definition = await session.scalar(
         text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"),
         {"name": constraint},
     )
     assert definition is not None, constraint
-    return set(re.findall(r"'([^']*)'::text", definition))
+    return definition
+
+
+async def _literals(session: AsyncSession, constraint: str) -> set[str]:
+    return set(re.findall(r"'([^']*)'::text", await _definition(session, constraint)))
+
+
+async def test_negative_valid_rows_is_rejected(session: AsyncSession, world: World) -> None:
+    # Breaks two rules at once: valid_rows >= 0 and duplicate_rows <= valid_rows (duplicate_rows
+    # is never negative). PostgreSQL reports the first CHECK by name, so the name cannot show that
+    # valid_rows >= 0 still exists; test_row_counts_check_covers_both_counts does.
+    with pytest.raises(IntegrityError) as exc:
+        async with session.begin_nested():
+            session.add(job(world.acc, total_rows=0, valid_rows=-1, invalid_rows=1))
+            await session.flush()
+
+    assert constraint_name(exc.value) in {
+        "ck_import_jobs_row_counts_non_negative",
+        "ck_import_jobs_duplicate_rows_valid",
+    }
+
+
+async def test_row_counts_check_covers_both_counts(session: AsyncSession) -> None:
+    definition = await _definition(session, "ck_import_jobs_row_counts_non_negative")
+
+    # Parenthesised: "invalid_rows >= 0" alone would also match "valid_rows >= 0".
+    assert "(valid_rows >= 0)" in definition
+    assert "(invalid_rows >= 0)" in definition
 
 
 @pytest.mark.parametrize(

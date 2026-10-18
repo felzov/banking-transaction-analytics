@@ -3,6 +3,7 @@
 All values are synthetic. IDs are set client-side so related rows can be built before a flush.
 """
 
+import os
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
@@ -78,6 +79,10 @@ def transaction(import_job: ImportJob, **overrides: Any) -> Transaction:
         "normalized_description": "coffee shop",
         "amount_minor": -320,
         "currency": Currency.GBP,
+        # Random, not derived from the fields: rows built here never collide on the dedup key,
+        # so a test about another rule cannot be rejected by uq_transactions_dedup first.
+        "fingerprint": os.urandom(32),
+        "occurrence": 1,
     }
     return Transaction(**(values | overrides))
 
