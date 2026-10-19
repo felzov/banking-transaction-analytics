@@ -6,7 +6,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from transaction_analytics.data.models import Account, ImportJob, ImportRowError
+from transaction_analytics.data.models import Account, ImportJob, ImportRowError, User
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
 
@@ -28,6 +28,16 @@ class AccountOut(BaseModel):
     @classmethod
     def of(cls, account: Account) -> Self:
         return cls(id=account.id, name=account.name, created_at=account.created_at)
+
+
+class UserOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    created_at: datetime
+
+    @classmethod
+    def of(cls, user: User) -> Self:
+        return cls(id=user.id, name=user.name, created_at=user.created_at)
 
 
 class ImportFailureOut(BaseModel):

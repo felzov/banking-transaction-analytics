@@ -8,6 +8,7 @@ from transaction_analytics.api.errors import install_error_handling
 from transaction_analytics.api.health import router as health_router
 from transaction_analytics.api.imports import router as imports_router
 from transaction_analytics.api.limits import RequestSizeLimitMiddleware
+from transaction_analytics.api.users import router as users_router
 from transaction_analytics.data.db import create_engine, create_sessionmaker
 from transaction_analytics.settings import get_settings
 
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestSizeLimitMiddleware)
     install_error_handling(app)
     app.include_router(health_router)
+    app.include_router(users_router)
     app.include_router(accounts_router)
     app.include_router(imports_router)
     return app
