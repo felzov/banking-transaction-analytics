@@ -111,6 +111,8 @@ class ApiToken(Base):
         ForeignKeyConstraint(["owner_id"], ["users.id"], name="owner", ondelete="RESTRICT"),
         # The lookup of every authenticated request.
         UniqueConstraint("token_sha256"),
+        # list_tokens (by owner, ordered by created_at) and the RESTRICT check of the owner FK.
+        Index(None, "owner_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()

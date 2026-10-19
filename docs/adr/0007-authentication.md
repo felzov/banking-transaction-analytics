@@ -26,27 +26,34 @@ owner's resource exists.
    would cost CPU on every request. No pepper: it would protect only low-entropy secrets.
 5. **A token is live** when it is not revoked, `expires_at > now()` (database clock, ADR 0003) and
    its user is not disabled. Tokens always expire: 1–365 days, 90 by default. Revoking and disabling
-   keep the first timestamp when repeated.
+   keep the first timestamp when repeated. A disabled user gets no new token (it could never be
+   used); `list-tokens` shows their tokens as `user-disabled`.
 6. **One 401 for every failure** (missing header, other scheme, malformed, unknown, expired,
-   revoked, disabled user): `{"error": {"code": "not_authenticated", ...}}` with
-   `WWW-Authenticate: Bearer`. Nothing tells a caller which tokens exist; another owner's resources
-   stay 404 (ADR 0005 item 4).
+   revoked, disabled user): `{"error": {"code": "not_authenticated", ...}}`. The header follows
+   RFC 6750: `WWW-Authenticate: Bearer` without credentials, `Bearer error="invalid_token"` when a
+   bearer token was sent, whatever was wrong with it. Nothing tells a caller which tokens exist;
+   another owner's resources stay 404 (ADR 0005 item 4).
 7. **The owner is a user.** `users` is the only table without `owner_id`; `api_tokens.owner_id` and
    `accounts.owner_id` reference `users(id)` (`ON DELETE RESTRICT`). The other tables already reach
    `accounts (owner_id, id)` through their composite foreign keys, so every `owner_id` now names a
    user without further keys. Migration 0004 creates a user ("Migrated owner") for every owner that
    already had accounts, so Phase 3–4 data stays reachable: issue a token for that id.
 8. **`get_owner_id` keeps its name and type** (ADR 0005 item 5): routes and services did not change.
-   It parses the header with FastAPI's `HTTPBearer(auto_error=False)`, which also documents the scheme
-   in OpenAPI, and calls `services.auth.authenticate`.
+   It reads the id from `get_current_user`, which parses the header with FastAPI's
+   `HTTPBearer(auto_error=False)` (this also documents the scheme in OpenAPI) and calls
+   `services.auth.authenticate`. The lookup loads the user row itself, so `GET /me` needs no second
+   query.
 9. **The token lookup is the one query not scoped by an owner** (`data.auth.find_token_owner`): it is
    how the owner is found. Every other user and token query takes `owner_id`; `revoke-token` needs
    the user id as well as the token id.
-10. **Authentication ends its read transaction.** Dependencies are solved before the upload route
-    streams its body (up to 5 MiB), so the lookup's transaction would otherwise stay open, holding a
-    pooled connection "idle in transaction", for as long as the client takes to send it (ADR 0004
-    item 10). `authenticate` rolls back after the lookup; this costs one more round trip per request.
-    It also means unauthenticated uploads get 401 before their body is read (no 413/415 for them).
+10. **The upload route ends the lookup's transaction before streaming its body.** Dependencies are
+    solved first, so the token lookup's transaction would otherwise stay open, holding a pooled
+    connection "idle in transaction", for as long as the client takes to send up to 5 MiB (ADR 0004
+    item 10). `upload_statement` calls `services.imports.release_connection` before reading the
+    body. Other routes keep the lookup's transaction for their own queries: ending it on every
+    request (the first version of this phase) measured as a ROLLBACK, a pool checkout with its
+    pre-ping and a new BEGIN, about three extra round trips. Unauthenticated uploads get 401
+    before their body is read (no 413/415 for them).
 11. **Every route except `/health` requires a token.** `tests/api/test_auth_contract.py` checks each
     OpenAPI operation for the bearer scheme and pins the route list, so a new route cannot ship
     without authentication by accident. `/docs` and `/openapi.json` stay public: they describe the
@@ -67,6 +74,8 @@ owner's resource exists.
   token costs one indexed query; a proxy or Phase 8 should limit request rates.
 - No `last_used_at`: writing it on every request would turn reads into writes. Unused tokens are
   found by their expiry instead.
+- `api_tokens (owner_id, created_at)` is indexed for `list-tokens` and the RESTRICT check of its
+  foreign key; nothing else queries tokens by owner.
 - No self-service: no sign-up, no token endpoints, no password login. Add them when a UI needs them.
 - No re-enabling of a disabled user and no user deletion (data is `RESTRICT`ed).
 - A token is checked once per request; a request that is already running when its token is revoked
@@ -80,5 +89,8 @@ owner's resource exists.
 - **JWT / OIDC** (`pyjwt[crypto]`): stateless, but a token cannot be revoked before it expires, and
   keys or an identity provider must be configured.
 - **`X-Owner-Id` header**: rejected in ADR 0005; any caller could claim any owner.
-- **A separate session for the lookup** instead of rolling back: needs its own sessionmaker in the
-  dependency, which the tests' session override would not reach.
+- **A separate session for the lookup** instead of reusing the request's: needs its own
+  sessionmaker in the dependency, which the tests' session override would not reach, and still
+  costs a checkout per request.
+- **Ending the lookup's transaction in `authenticate`** (every route): simplest place, but about
+  three round trips per request for a problem only the upload route has (item 10).

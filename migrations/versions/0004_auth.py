@@ -5,7 +5,8 @@ Revises: 0003
 Create Date: 2026-10-19
 
 - users: one row per owner; owner_id in every other table is a user id (ADR 0007).
-- api_tokens: bearer tokens, stored only as the SHA-256 of the token text.
+- api_tokens: bearer tokens, stored only as the SHA-256 of the token text; indexed by owner for
+  listing them and for the RESTRICT check of its foreign key.
 - fk_accounts_owner: accounts.owner_id -> users.id. The other tables reach accounts through their
   composite foreign keys (import_jobs -> accounts (owner_id, id), ...), so every owner_id now names
   a user.
@@ -80,6 +81,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "revoked_at >= created_at", name=op.f("ck_api_tokens_revoked_after_created")
         ),
+    )
+
+    op.create_index(
+        op.f("ix_api_tokens_owner_id_created_at"), "api_tokens", ["owner_id", "created_at"]
     )
 
     op.execute(BACKFILL_USERS)

@@ -68,6 +68,15 @@ def test_active_file_index_is_unique_and_partial() -> None:
     assert str(index.dialect_options["postgresql"]["where"]) == "status <> 'failed'"
 
 
+def test_tokens_are_indexed_by_owner_in_listing_order() -> None:
+    # Review fix: list_tokens and the RESTRICT check of fk_api_tokens_owner scanned the table.
+    (index,) = Base.metadata.tables["api_tokens"].indexes
+
+    assert index.name == "ix_api_tokens_owner_id_created_at"
+    assert [column.name for column in index.columns] == ["owner_id", "created_at"]
+    assert not index.unique
+
+
 def test_dedup_constraint_is_owner_scoped_per_occurrence() -> None:
     table = Base.metadata.tables["transactions"]
     (constraint,) = [c for c in table.constraints if c.name == DEDUP_CONSTRAINT]

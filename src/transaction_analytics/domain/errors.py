@@ -56,40 +56,32 @@ class TokenErrorCode(StrEnum):
     LIFETIME_OUT_OF_RANGE = "lifetime_out_of_range"
 
 
-class FieldValidationError(ValueError):
-    """A single value failed validation. Carries a stable code, not the raw value."""
+class CodedValidationError[C: StrEnum](ValueError):
+    """Input failed validation. Carries a stable code and fixed text, never the raw value.
 
-    def __init__(self, code: FieldErrorCode, message: str) -> None:
+    The API answers every subclass with 422 (api/errors.py); the CLI prints the message.
+    """
+
+    def __init__(self, code: C, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
 
 
-class AccountValidationError(ValueError):
-    """An account name failed validation. Carries a stable code, not the raw value."""
-
-    def __init__(self, code: AccountErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+class FieldValidationError(CodedValidationError[FieldErrorCode]):
+    """A single value of a statement row failed validation."""
 
 
-class LabelValidationError(ValueError):
-    """A name failed validation. Carries a stable code, not the raw value."""
-
-    def __init__(self, code: LabelErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+class AccountValidationError(CodedValidationError[AccountErrorCode]):
+    """An account name failed validation."""
 
 
-class TokenValidationError(ValueError):
+class LabelValidationError(CodedValidationError[LabelErrorCode]):
+    """A name (account, user, API token) failed validation."""
+
+
+class TokenValidationError(CodedValidationError[TokenErrorCode]):
     """An API token request failed validation."""
-
-    def __init__(self, code: TokenErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
 
 
 class FileRejectedError(Exception):

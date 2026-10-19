@@ -12,6 +12,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from transaction_analytics.data.models import User
 from transaction_analytics.services import auth as auth_service
 from transaction_analytics.services.imports import ImportLimits
 from transaction_analytics.settings import Settings, get_settings
@@ -42,13 +43,21 @@ _bearer = HTTPBearer(
 )
 
 
-async def get_owner_id(
+async def get_current_user(
     session: SessionDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> uuid.UUID:
+) -> User:
     """The user whose API token the request carries (ADR 0007); 401 otherwise."""
     token = None if credentials is None else credentials.credentials
     return await auth_service.authenticate(session, token=token)
+
+
+CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+async def get_owner_id(user: CurrentUserDep) -> uuid.UUID:
+    """What routes and services scope by. Tests that are not about authentication override this."""
+    return user.id
 
 
 async def get_import_limits(settings: SettingsDep) -> ImportLimits:

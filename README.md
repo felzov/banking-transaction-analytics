@@ -74,7 +74,8 @@ a user: `issue-token --user-id 00000000-0000-4000-8000-000000000001` (the former
 default) gets it back.
 
 A missing, malformed, unknown, expired or revoked token, or a disabled user, all get the same
-`401 {"error": {"code": "not_authenticated", ...}}` with `WWW-Authenticate: Bearer`.
+`401 {"error": {"code": "not_authenticated", ...}}`. `WWW-Authenticate` is `Bearer` without a token
+and `Bearer error="invalid_token"` when one was sent (RFC 6750). A disabled user gets no new tokens.
 
 ## API
 

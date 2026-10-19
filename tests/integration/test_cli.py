@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from factories import OWNER_ID
-from sqlalchemy import func, select
+from sqlalchemy import func, make_url, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -40,7 +40,7 @@ async def run(
 
 async def authenticate(sessions: async_sessionmaker[AsyncSession], token: str) -> uuid.UUID:
     async with sessions() as session:
-        return await auth_service.authenticate(session, token=token)
+        return (await auth_service.authenticate(session, token=token)).id
 
 
 async def count(sessions: async_sessionmaker[AsyncSession], model: type) -> int:
@@ -123,6 +123,54 @@ async def test_disabled_user_tokens_are_refused(
         await authenticate(sessions, token.strip())
 
 
+async def test_disabled_user_gets_no_new_token_and_shows_as_disabled(
+    sessions: async_sessionmaker[AsyncSession], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Review fix: a token issued to a disabled user could never authenticate, yet issue-token
+    # printed one and list-tokens called the older ones "active".
+    _, out, _ = await run(sessions, capsys, "create-user", "--name", "Max")
+    user_id = out.strip()
+    await run(sessions, capsys, "issue-token", "--user-id", user_id, "--name", "old")
+    await run(sessions, capsys, "disable-user", "--user-id", user_id)
+    tokens = await count(sessions, ApiToken)
+
+    status, out, err = await run(
+        sessions, capsys, "issue-token", "--user-id", user_id, "--name", "new"
+    )
+    _, listed, _ = await run(sessions, capsys, "list-tokens", "--user-id", user_id)
+
+    assert (status, out, err.strip()) == (1, "", "Error: User is disabled.")
+    assert await count(sessions, ApiToken) == tokens
+    assert [line.split("\t")[1] for line in listed.splitlines()] == ["user-disabled"]
+
+
+async def test_unreachable_database_is_one_line_without_details(
+    committed_database_url: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Review fix: connection failures are not DBAPIErrors; they escaped as a traceback naming the
+    # host, port and user. Wrong password (a DBAPIError) and unknown host are covered too.
+    url = make_url(committed_database_url)
+    for broken, expected in [
+        (url.set(port=1), "Error: cannot reach the database (ConnectionRefusedError)."),
+        (url.set(host="no-such-host.invalid"), "Error: cannot reach the database (gaierror)."),
+        (
+            url.set(password="wrong-password-for-test"),
+            "Error: the database refused the command (InvalidPasswordError).",
+        ),
+    ]:
+        engine = create_engine(broken.render_as_string(hide_password=False), poolclass=NullPool)
+        try:
+            status, out, err = await run(
+                create_sessionmaker(engine), capsys, "list-tokens", "--user-id", str(OWNER_ID)
+            )
+        finally:
+            await engine.dispose()
+
+        assert (status, out, err.strip()) == (1, "", expected)
+        for detail in (str(broken.host), str(broken.port), str(broken.username)):
+            assert detail not in err
+
+
 async def test_existing_owner_can_get_a_token(
     sessions: async_sessionmaker[AsyncSession], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -156,6 +204,12 @@ async def test_existing_owner_can_get_a_token(
         (
             ("revoke-token", "--user-id", str(OWNER_ID), "--token-id", str(uuid.uuid4())),
             "Error: API token not found.",
+        ),
+        # Review fix: a mistyped user id is "user not found", not "token not found" (which would
+        # suggest a leaked token is already gone).
+        (
+            ("revoke-token", "--user-id", str(uuid.uuid4()), "--token-id", str(uuid.uuid4())),
+            "Error: User not found.",
         ),
     ],
 )

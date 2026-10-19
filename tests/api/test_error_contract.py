@@ -8,6 +8,7 @@ proves nothing reached the server's exception logging.
 import logging
 import uuid
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import fastapi.dependencies.utils as fastapi_dependency_utils
@@ -27,6 +28,13 @@ from transaction_analytics.api.deps import (
 from transaction_analytics.api.errors import SERVICE_ERROR_STATUS
 from transaction_analytics.api.imports import router as imports_router
 from transaction_analytics.api.limits import MAX_JSON_BYTES, is_upload_path
+from transaction_analytics.domain.errors import (
+    CodedValidationError,
+    LabelErrorCode,
+    LabelValidationError,
+    TokenErrorCode,
+    TokenValidationError,
+)
 from transaction_analytics.main import create_app
 from transaction_analytics.services.errors import ServiceError
 from transaction_analytics.services.imports import ImportLimits
@@ -44,6 +52,11 @@ class _NoDatabase:
 
     def __getattr__(self, name: str) -> object:
         raise AssertionError(f"database used: {name}")
+
+    def in_transaction(self) -> bool:
+        # The one question that needs no database: the upload route asks it before streaming
+        # (services.imports.release_connection). Nothing was queried, so no.
+        return False
 
 
 @pytest.fixture
@@ -316,9 +329,9 @@ async def test_request_path_uses_no_threadpool(monkeypatch: pytest.MonkeyPatch) 
     async def no_database() -> _NoDatabase:
         return _NoDatabase()
 
-    async def authenticate(session: object, *, token: str | None) -> uuid.UUID:
+    async def authenticate(session: object, *, token: str | None) -> SimpleNamespace:
         assert token == TOKEN
-        return OWNER_ID
+        return SimpleNamespace(id=OWNER_ID)
 
     # Only leaf dependencies are replaced, with async ones; get_owner_id (with its bearer parsing)
     # and get_import_limits run for real. The token lookup is a service coroutine, never run in
@@ -334,3 +347,27 @@ async def test_request_path_uses_no_threadpool(monkeypatch: pytest.MonkeyPatch) 
 
     assert response.status_code == 415
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LabelValidationError(LabelErrorCode.REQUIRED, "Name is required."),
+        TokenValidationError(
+            TokenErrorCode.LIFETIME_OUT_OF_RANGE, "Token lifetime must be between 1 and 365 days."
+        ),
+    ],
+    ids=["label", "token"],
+)
+def test_every_validation_error_is_a_422_with_its_code(
+    app: FastAPI, error: CodedValidationError
+) -> None:
+    # Review fix: only AccountValidationError had a handler; the others answered 500.
+    @app.get("/boom/validation")
+    async def invalid() -> None:
+        raise error
+
+    response = TestClient(app).get("/boom/validation")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": {"code": error.code, "message": error.message}}

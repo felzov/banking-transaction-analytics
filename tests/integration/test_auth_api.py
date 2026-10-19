@@ -1,7 +1,7 @@
 """Authentication end to end: real API tokens, no get_owner_id override (ADR 0007).
 
-Setup data is committed (a savepoint release here) before each request: authenticate rolls back its
-read transaction, which would discard flushed but uncommitted rows.
+Setup data is committed (a savepoint release here) before each request, as it would be by another
+client: services commit or roll back their own transactions.
 """
 
 import logging
@@ -14,8 +14,8 @@ import httpx
 import pytest
 from factories import api_token
 from fastapi import FastAPI
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import event, func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from transaction_analytics.api.deps import get_owner_id
 from transaction_analytics.data.models import Account, ApiToken, ImportJob
@@ -125,7 +125,51 @@ async def test_every_dead_token_gets_the_same_401(
 
     assert response.status_code == 401
     assert response.json() == NOT_AUTHENTICATED
-    assert response.headers["www-authenticate"] == "Bearer"
+    # RFC 6750: a token was sent, so invalid_token; the same value whatever the reason.
+    assert response.headers["www-authenticate"] == 'Bearer error="invalid_token"'
+
+
+async def test_no_token_gets_no_error_code(client: httpx.AsyncClient) -> None:
+    # RFC 6750 section 3.1: a request without credentials gets the scheme only.
+    for headers in ({}, {"Authorization": "Basic dXNlcjpwYXNz"}):
+        response = await client.get("/me", headers=headers)
+
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
+
+
+async def test_authentication_keeps_the_request_transaction(session: AsyncSession) -> None:
+    # Review fix: ending the lookup's transaction on every request cost a ROLLBACK, a pool checkout
+    # with pre-ping and a new BEGIN. Only the upload route ends it (test below).
+    _, token = await new_user(session)
+
+    user = await auth_service.authenticate(session, token=token)
+
+    assert session.in_transaction()
+    assert user.name == "Alice"
+
+
+async def test_me_is_answered_by_the_token_lookup_alone(
+    client: httpx.AsyncClient, session: AsyncSession, engine: AsyncEngine
+) -> None:
+    # Review fix: /me loaded the user a second time after authenticating.
+    _, token = await new_user(session)
+    statements: list[str] = []
+
+    def record(conn: object, cursor: object, statement: str, *args: object) -> None:
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record)
+    try:
+        response = await client.get("/me", headers=bearer(token))
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+    # SAVEPOINT is how the test session begins a transaction (conftest), not a query of the app's.
+    queries = [s for s in statements if not s.startswith(("SAVEPOINT", "RELEASE", "ROLLBACK TO"))]
+    assert response.status_code == 200
+    assert len(queries) == 1
+    assert queries[0].lstrip().startswith("SELECT users.")
 
 
 async def test_expiry_is_exclusive_and_uses_the_database_clock(

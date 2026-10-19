@@ -31,6 +31,11 @@ class _NoDatabase:
     def __getattr__(self, name: str) -> object:
         raise AssertionError(f"database used: {name}")
 
+    def in_transaction(self) -> bool:
+        # The one question that needs no database: the upload route asks it before streaming
+        # (services.imports.release_connection). Nothing was queried, so no.
+        return False
+
 
 @pytest.fixture
 def app() -> FastAPI:

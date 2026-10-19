@@ -81,6 +81,18 @@ class RowErrorPage:
     next_after_row: int | None
 
 
+async def release_connection(session: AsyncSession) -> None:
+    """End the request's read transaction (the token lookup) before a long wait on the client.
+
+    The upload route streams a body of up to 5 MiB after authenticating; meanwhile no pooled
+    connection may sit "idle in transaction" (item 2, ADR 0004 item 10). Other routes keep the
+    lookup's transaction: ending it costs a ROLLBACK, a pool checkout with its pre-ping and a new
+    BEGIN, about three round trips.
+    """
+    if session.in_transaction():
+        await session.rollback()
+
+
 async def import_statement(
     session: AsyncSession,
     *,

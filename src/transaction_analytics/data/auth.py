@@ -1,7 +1,7 @@
 """User and API token persistence (ADR 0007).
 
 Every function requires owner_id (a user id) except two: add_user, which creates an owner, and
-find_token_owner, which is how a request's owner is found in the first place, from its token.
+find_token_user, which is how a request's owner is found in the first place, from its token.
 """
 
 import uuid
@@ -50,15 +50,15 @@ async def add_token(
     return (await session.scalars(statement)).one()
 
 
-async def find_token_owner(session: AsyncSession, *, token_sha256: bytes) -> uuid.UUID | None:
-    """The owner of a token that is live: not revoked, not expired, its user not disabled.
+async def find_token_user(session: AsyncSession, *, token_sha256: bytes) -> User | None:
+    """The user of a token that is live: not revoked, not expired, the user not disabled.
 
     Not scoped by owner_id: this lookup is what determines the owner. Served by the unique index on
     token_sha256.
     """
     statement = (
-        select(ApiToken.owner_id)
-        .join(User, User.id == ApiToken.owner_id)
+        select(User)
+        .join(ApiToken, ApiToken.owner_id == User.id)
         .where(
             ApiToken.token_sha256 == token_sha256,
             ApiToken.revoked_at.is_(None),

@@ -24,6 +24,7 @@ from transaction_analytics.domain.labels import clean_label
 from transaction_analytics.services.errors import (
     NotAuthenticatedError,
     TokenNotFoundError,
+    UserDisabledError,
     UserNotFoundError,
 )
 
@@ -40,20 +41,19 @@ def generate_token() -> str:
     return TOKEN_PREFIX + secrets.token_urlsafe(TOKEN_RANDOM_BYTES)
 
 
-async def authenticate(session: AsyncSession, *, token: str | None) -> uuid.UUID:
-    """The owner of a live token; NotAuthenticatedError for anything else.
+async def authenticate(session: AsyncSession, *, token: str | None) -> User:
+    """The user of a live token; NotAuthenticatedError for anything else.
 
-    A malformed token is refused without a query. After the lookup the read transaction is ended:
-    the upload route streams a body of up to 5 MiB after authenticating, and must not hold a pooled
-    connection "idle in transaction" meanwhile (ADR 0004, item 10).
+    A malformed token is refused without a query. The lookup's read transaction stays open for the
+    rest of the request, which uses the same session; the upload route ends it before streaming
+    its body (services.imports.release_connection).
     """
     if token is None or not is_well_formed(token):
-        raise NotAuthenticatedError
-    owner_id = await auth_data.find_token_owner(session, token_sha256=token_digest(token))
-    await session.rollback()
-    if owner_id is None:
-        raise NotAuthenticatedError
-    return owner_id
+        raise NotAuthenticatedError(token_sent=token is not None)
+    user = await auth_data.find_token_user(session, token_sha256=token_digest(token))
+    if user is None:
+        raise NotAuthenticatedError(token_sent=True)
+    return user
 
 
 async def create_user(session: AsyncSession, *, name: str) -> User:
@@ -80,10 +80,12 @@ async def disable_user(session: AsyncSession, *, owner_id: uuid.UUID) -> None:
 async def issue_token(
     session: AsyncSession, *, owner_id: uuid.UUID, name: str, days: int
 ) -> IssuedToken:
-    """Raises LabelValidationError, TokenValidationError or UserNotFoundError."""
+    """Raises LabelValidationError, TokenValidationError, UserNotFoundError or
+    UserDisabledError (its token could never be used)."""
     name = clean_label(name)
     check_token_days(days)
-    await get_user(session, owner_id=owner_id)
+    if (await get_user(session, owner_id=owner_id)).disabled_at is not None:
+        raise UserDisabledError
     plaintext = generate_token()
     token = await auth_data.add_token(
         session, owner_id=owner_id, name=name, token_sha256=token_digest(plaintext), days=days
@@ -98,6 +100,9 @@ async def list_tokens(session: AsyncSession, *, owner_id: uuid.UUID) -> list[Api
 
 
 async def revoke_token(session: AsyncSession, *, owner_id: uuid.UUID, token_id: uuid.UUID) -> None:
+    # A mistyped user id must not read as "token not found": that would suggest a leaked token
+    # is already gone.
+    await get_user(session, owner_id=owner_id)
     if not await auth_data.revoke_token(session, owner_id=owner_id, token_id=token_id):
         raise TokenNotFoundError
     await session.commit()

@@ -64,6 +64,7 @@ async def upload_statement(
     limits: ImportLimitsDep,
 ) -> ImportOut:
     """Import a CSV statement. A rejected file still creates an import, with status "failed"."""
+    await import_service.release_connection(session)
     content = await _read_csv_body(request, limits.max_bytes)
     result = await import_service.import_statement(
         session, owner_id=owner_id, account_id=account_id, content=content, limits=limits

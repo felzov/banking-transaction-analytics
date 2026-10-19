@@ -8,7 +8,7 @@
 
 Thin, like the API routes: services do the work. What a script needs (a new id, the token) goes to
 stdout; everything else to stderr. issue-token prints the token once; it is never stored. A database
-error prints only its class name (ADR 0003, item 10).
+error, including failing to connect, prints only its class name (ADR 0003, item 10).
 """
 
 import argparse
@@ -23,9 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from transaction_analytics.data.db import create_engine, create_sessionmaker
 from transaction_analytics.data.errors import error_kind
-from transaction_analytics.data.models import ApiToken
+from transaction_analytics.data.models import ApiToken, User
 from transaction_analytics.domain.auth import DEFAULT_TOKEN_DAYS, MAX_TOKEN_DAYS
-from transaction_analytics.domain.errors import LabelValidationError, TokenValidationError
+from transaction_analytics.domain.errors import CodedValidationError
 from transaction_analytics.services import auth as auth_service
 from transaction_analytics.services.errors import ServiceError
 from transaction_analytics.settings import get_settings
@@ -56,18 +56,21 @@ async def _issue_token(session: AsyncSession, args: argparse.Namespace) -> None:
     print(issued.plaintext)
 
 
-def _status(token: ApiToken, now: datetime) -> str:
+def _status(token: ApiToken, user: User, now: datetime) -> str:
     # Display only, so the local clock is fine; authentication compares with the database clock.
     if token.revoked_at is not None:
         return "revoked"
+    if user.disabled_at is not None:
+        return "user-disabled"
     return "expired" if token.expires_at <= now else "active"
 
 
 async def _list_tokens(session: AsyncSession, args: argparse.Namespace) -> None:
     now = datetime.now(UTC)
+    user = await auth_service.get_user(session, owner_id=args.user_id)
     for token in await auth_service.list_tokens(session, owner_id=args.user_id):
         expires = token.expires_at.isoformat()
-        print(f"{token.id}\t{_status(token, now)}\texpires {expires}\t{token.name}")
+        print(f"{token.id}\t{_status(token, user, now)}\texpires {expires}\t{token.name}")
 
 
 async def _revoke_token(session: AsyncSession, args: argparse.Namespace) -> None:
@@ -121,11 +124,16 @@ async def run(args: argparse.Namespace, sessions: async_sessionmaker[AsyncSessio
     try:
         async with sessions() as session:
             await COMMANDS[args.command](session, args)
-    except (LabelValidationError, TokenValidationError, ServiceError) as exc:
+    except (CodedValidationError, ServiceError) as exc:
         _note(f"Error: {exc.message}")
         return 1
     except DBAPIError as exc:
         _note(f"Error: the database refused the command ({error_kind(exc)}).")
+        return 1
+    except OSError as exc:
+        # Refused connections, unknown hosts and timeouts are not wrapped in DBAPIError, and their
+        # text names the host and port; only the class is printed.
+        _note(f"Error: cannot reach the database ({type(exc).__name__}).")
         return 1
     return 0
 

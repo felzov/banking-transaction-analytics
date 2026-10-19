@@ -21,10 +21,20 @@ class NotAuthenticatedError(ServiceError):
     code = "not_authenticated"
     message = "A valid API token is required."
 
+    def __init__(self, *, token_sent: bool) -> None:
+        super().__init__()
+        # Only for the WWW-Authenticate header (RFC 6750): never which check failed.
+        self.token_sent = token_sent
+
 
 class UserNotFoundError(ServiceError):
     code = "user_not_found"
     message = "User not found."
+
+
+class UserDisabledError(ServiceError):
+    code = "user_disabled"
+    message = "User is disabled."
 
 
 class TokenNotFoundError(ServiceError):
