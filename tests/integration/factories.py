@@ -5,17 +5,26 @@ All values are synthetic. IDs are set client-side so related rows can be built b
 
 import os
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from transaction_analytics.data.models import Account, ImportJob, ImportRowError, Transaction
+from transaction_analytics.data.models import (
+    Account,
+    ApiToken,
+    ImportJob,
+    ImportRowError,
+    Transaction,
+    User,
+)
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
 from transaction_analytics.domain.money import Currency
 
-# Fixed, fake owners. Real ownership arrives with auth in Phase 5.
+# Fixed, fake owners. conftest.py commits a users row for each into every migrated test database,
+# so tests can create accounts for them directly; tests of authentication create their own users.
 OWNER_ID = uuid.UUID("00000000-0000-4000-8000-000000000001")
 OTHER_OWNER_ID = uuid.UUID("00000000-0000-4000-8000-000000000002")
+SEEDED_OWNERS = {OWNER_ID: "Test owner", OTHER_OWNER_ID: "Other test owner"}
 
 STARTED = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 FINISHED = datetime(2026, 10, 1, 12, 1, tzinfo=UTC)
@@ -23,6 +32,23 @@ FINISHED = datetime(2026, 10, 1, 12, 1, tzinfo=UTC)
 
 def sha256_hex(seed: int = 0) -> str:
     return f"{seed:064x}"
+
+
+def user(**overrides: Any) -> User:
+    values: dict[str, Any] = {"id": uuid.uuid4(), "name": "Test user"}
+    return User(**(values | overrides))
+
+
+def api_token(owner_id: uuid.UUID = OWNER_ID, **overrides: Any) -> ApiToken:
+    values: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "owner_id": owner_id,
+        "name": "laptop",
+        "token_sha256": os.urandom(32),
+        # created_at is the database's now(), i.e. the test transaction's start: well before this.
+        "expires_at": datetime.now(UTC) + timedelta(days=90),
+    }
+    return ApiToken(**(values | overrides))
 
 
 def account(owner_id: uuid.UUID = OWNER_ID, **overrides: Any) -> Account:

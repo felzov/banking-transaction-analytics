@@ -1,7 +1,7 @@
 """SQLAlchemy models (ADR 0003).
 
-Ownership is enforced by the schema, not only by queries: every table has owner_id, and composite
-foreign keys include it, so a row cannot reference another owner's account or import job.
+Ownership is enforced by the schema, not only by queries: every table except users has owner_id, and
+composite foreign keys include it, so a row cannot reference another owner's account or import job.
 Column order in those keys is owner_id first, so the same unique indexes serve owner-scoped lookups.
 
 CHECK constraints live only in the migrations (migrations/versions/). Alembic autogenerate does
@@ -88,9 +88,48 @@ def _created_at() -> Mapped[datetime]:
     return mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class User(Base):
+    """An owner (ADR 0007): owner_id in every other table is a user id.
+
+    The one table without owner_id, because it is what owner_id refers to.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    # A disabled user's tokens are refused; their data stays.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApiToken(Base):
+    """A bearer token, stored only as its SHA-256 (ADR 0007, domain/auth.py)."""
+
+    __tablename__ = "api_tokens"
+    __table_args__ = (
+        ForeignKeyConstraint(["owner_id"], ["users.id"], name="owner", ondelete="RESTRICT"),
+        # The lookup of every authenticated request.
+        UniqueConstraint("token_sha256"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_id: Mapped[uuid.UUID]
+    # What the token is for (e.g. "laptop"), so the owner can tell which one to revoke.
+    name: Mapped[str] = mapped_column(Text)
+    token_sha256: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = _created_at()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Account(Base):
     __tablename__ = "accounts"
-    __table_args__ = (UniqueConstraint("owner_id", "id"),)
+    __table_args__ = (
+        # The other tables reach users through their composite foreign keys to accounts.
+        ForeignKeyConstraint(["owner_id"], ["users.id"], name="owner", ondelete="RESTRICT"),
+        UniqueConstraint("owner_id", "id"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     owner_id: Mapped[uuid.UUID]

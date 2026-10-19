@@ -5,6 +5,8 @@
 - Each test runs in one outer transaction that is rolled back; the session uses savepoints, so
   test code may flush, commit and catch IntegrityError without leaking rows into other tests.
 - Engines use NullPool and live for one test, so no connection outlives its event loop.
+- Every migrated database gets committed users rows for the fixed test owners (factories.py), so
+  tests can create their accounts directly. Tests of authentication create users of their own.
 - API tests call the app in-process through httpx.ASGITransport, on the test's event loop, with
   the request session replaced by the test session. starlette's TestClient would run the app on
   another event loop, where the asyncpg connection of the test session cannot be used.
@@ -18,7 +20,7 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
-from factories import OWNER_ID
+from factories import OWNER_ID, SEEDED_OWNERS
 from fastapi import FastAPI
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -89,6 +91,23 @@ async def _drop_database(url: URL) -> None:
         await engine.dispose()
 
 
+async def _seed_owners(url: URL) -> None:
+    engine = create_engine(_url_string(url), poolclass=NullPool)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("INSERT INTO users (id, name) VALUES (:id, :name)"),
+                [{"id": owner_id, "name": name} for owner_id, name in SEEDED_OWNERS.items()],
+            )
+    finally:
+        await engine.dispose()
+
+
+def _migrate_and_seed(url: URL) -> None:
+    command.upgrade(_alembic_config(url), "head")
+    asyncio.run(_seed_owners(url))
+
+
 def _alembic_config(url: URL) -> Config:
     config = Config(str(ROOT / "alembic.ini"))
     config.attributes["database_url"] = _url_string(url)
@@ -100,7 +119,7 @@ def database_url() -> str:
     """A freshly created, fully migrated test database (clean DB -> upgrade head)."""
     url = _test_database_url()
     asyncio.run(_recreate_database(url))
-    command.upgrade(_alembic_config(url), "head")
+    _migrate_and_seed(url)
     # Left in place after the run so a failure can be inspected; recreated next session.
     return _url_string(url)
 
@@ -143,7 +162,10 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 @pytest.fixture
 def app(session: AsyncSession) -> FastAPI:
-    """The real app, acting as OWNER_ID with default limits. Tests may change the overrides."""
+    """The real app, acting as OWNER_ID with default limits. Tests may change the overrides.
+
+    Authentication is overridden here; tests/integration/test_auth_api.py removes the override.
+    """
     app = create_app()
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_owner_id] = lambda: OWNER_ID
@@ -169,5 +191,5 @@ def committed_database_url(empty_database_url: URL) -> str:
     The shared database isolates tests by rolling back one outer transaction, so concurrency and
     "visible after commit" cannot be tested there. Synchronous: alembic runs asyncio.run().
     """
-    command.upgrade(_alembic_config(empty_database_url), "head")
+    _migrate_and_seed(empty_database_url)
     return _url_string(empty_database_url)
