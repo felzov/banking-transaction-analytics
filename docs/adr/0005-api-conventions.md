@@ -1,6 +1,6 @@
 # ADR 0005 — API conventions: error envelope, no echoed values, placeholder owner
 
-- Status: Accepted
+- Status: Accepted; item 5 superseded by ADR 0007 (API tokens)
 - Date: 2026-10-17
 
 ## Context
@@ -38,7 +38,7 @@ Authentication arrives in Phase 5, but endpoints need an owner now.
 5. **Placeholder owner until Phase 5**: `get_owner_id` is a FastAPI dependency returning
    `DEV_OWNER_ID` from settings (fixed default). Not a header such as `X-Owner-Id`: that would
    make a spoofable value part of the API contract. Phase 5 replaces the dependency; routes and
-   services do not change.
+   services do not change. → Done in ADR 0007: `get_owner_id` authenticates a bearer token.
 6. **Request bodies are capped at 64 KiB** (`RequestSizeLimitMiddleware`) except the CSV
    upload, which streams and has its own limit. FastAPI reads a JSON body fully before
    validating it, so `max_length` on a field does not bound memory. The middleware reads the
@@ -49,8 +49,9 @@ Authentication arrives in Phase 5, but endpoints need an owner now.
 
 ## Consequences
 
-- Until Phase 5, anyone who can reach the API acts as the one configured owner. The server must
-  stay on localhost (`make run` binds 127.0.0.1).
+- ~~Until Phase 5, anyone who can reach the API acts as the one configured owner.~~ Since ADR 0007
+  every route except `/health` needs an API token. `make run` still binds 127.0.0.1: there is no
+  TLS and no rate limiting yet (Phase 8).
 - Debugging a 500 relies on the logged class name, constraint name and source location, not the
   message. This is deliberate; reproducing with synthetic data is the way to get details.
 - A non-standard HTTP status (e.g. 499) keeps its code, with the generic message "HTTP error".
