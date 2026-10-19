@@ -154,6 +154,8 @@ Python 3.12 and 3.14 against a `postgres:17` service.
   same server: each run force-drops the shared test databases, killing the other run.
 - Run `alembic` and `make` from the repository root: `.env` is read from the current directory.
 - The database must be UTF8 (the length limits count characters).
+- Deprecation warnings (Python's, Starlette's and FastAPI's) fail the tests: fix the code, or
+  pin the dependency, when an upgrade starts one (`filterwarnings` in `pyproject.toml`).
 
 ## Supported CSV format (v1)
 

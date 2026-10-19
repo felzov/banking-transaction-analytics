@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from factories import api_token
 from fastapi import FastAPI
@@ -67,7 +67,7 @@ async def add_token_expiring(session: AsyncSession, owner_id: uuid.UUID, offset:
 
 
 async def test_a_valid_token_acts_as_its_user(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     user_id, token = await new_user(session)
 
@@ -83,7 +83,9 @@ async def test_a_valid_token_acts_as_its_user(
     assert stored.owner_id == user_id
 
 
-async def test_scheme_is_case_insensitive(client: httpx.AsyncClient, session: AsyncSession) -> None:
+async def test_scheme_is_case_insensitive(
+    client: httpx2.AsyncClient, session: AsyncSession
+) -> None:
     _, token = await new_user(session)
 
     response = await client.get("/me", headers={"Authorization": f"bearer {token}"})
@@ -116,7 +118,7 @@ async def _disabled_user(session: AsyncSession) -> str:
 
 @pytest.mark.parametrize("make_token", [_unknown, _revoked, _expired, _disabled_user])
 async def test_every_dead_token_gets_the_same_401(
-    client: httpx.AsyncClient, session: AsyncSession, make_token: object
+    client: httpx2.AsyncClient, session: AsyncSession, make_token: object
 ) -> None:
     # One body and header for every reason, so a caller cannot learn which tokens exist.
     token = await make_token(session)  # type: ignore[operator]
@@ -129,7 +131,7 @@ async def test_every_dead_token_gets_the_same_401(
     assert response.headers["www-authenticate"] == 'Bearer error="invalid_token"'
 
 
-async def test_no_token_gets_no_error_code(client: httpx.AsyncClient) -> None:
+async def test_no_token_gets_no_error_code(client: httpx2.AsyncClient) -> None:
     # RFC 6750 section 3.1: a request without credentials gets the scheme only.
     for headers in ({}, {"Authorization": "Basic dXNlcjpwYXNz"}):
         response = await client.get("/me", headers=headers)
@@ -150,7 +152,7 @@ async def test_authentication_keeps_the_request_transaction(session: AsyncSessio
 
 
 async def test_me_is_answered_by_the_token_lookup_alone(
-    client: httpx.AsyncClient, session: AsyncSession, engine: AsyncEngine
+    client: httpx2.AsyncClient, session: AsyncSession, engine: AsyncEngine
 ) -> None:
     # Review fix: /me loaded the user a second time after authenticating.
     _, token = await new_user(session)
@@ -173,7 +175,7 @@ async def test_me_is_answered_by_the_token_lookup_alone(
 
 
 async def test_expiry_is_exclusive_and_uses_the_database_clock(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     # now() is fixed for the whole test transaction, so the boundary is exact.
     user_id, _ = await new_user(session)
@@ -185,7 +187,7 @@ async def test_expiry_is_exclusive_and_uses_the_database_clock(
 
 
 async def test_revoking_takes_effect_on_the_next_request(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     user_id, token = await new_user(session)
     assert (await client.get("/me", headers=bearer(token))).status_code == 200
@@ -197,7 +199,7 @@ async def test_revoking_takes_effect_on_the_next_request(
 
 
 async def test_users_cannot_reach_each_others_data(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     _, alice = await new_user(session, "Alice")
     _, bob = await new_user(session, "Bob")
@@ -229,7 +231,7 @@ async def test_users_cannot_reach_each_others_data(
 
 
 async def test_unauthenticated_upload_reads_no_body_and_stores_nothing(
-    client: httpx.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    client: httpx2.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, token = await new_user(session)
     account = await client.post("/accounts", json={"name": "Current"}, headers=bearer(token))
@@ -256,7 +258,7 @@ async def test_unauthenticated_upload_reads_no_body_and_stores_nothing(
 
 
 async def test_no_transaction_is_open_while_the_body_is_read_or_parsed(
-    client: httpx.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    client: httpx2.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Authentication runs before the body is streamed; its read transaction must be over by then,
     # or a slow upload would hold a pooled connection "idle in transaction" (ADR 0004, item 10).
@@ -296,7 +298,7 @@ async def test_only_the_hash_of_a_token_is_stored(session: AsyncSession) -> None
 
 
 async def test_tokens_never_reach_logs_or_responses(
-    client: httpx.AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    client: httpx2.AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
 ) -> None:
     _, live = await new_user(session)
     revoked = await _revoked(session)
