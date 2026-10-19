@@ -7,7 +7,7 @@
 - Engines use NullPool and live for one test, so no connection outlives its event loop.
 - Every migrated database gets committed users rows for the fixed test owners (factories.py), so
   tests can create their accounts directly. Tests of authentication create users of their own.
-- API tests call the app in-process through httpx.ASGITransport, on the test's event loop, with
+- API tests call the app in-process through httpx2.ASGITransport, on the test's event loop, with
   the request session replaced by the test session. starlette's TestClient would run the app on
   another event loop, where the asyncpg connection of the test session cannot be used.
 """
@@ -16,7 +16,7 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -176,11 +176,11 @@ def app(session: AsyncSession) -> FastAPI:
 
 
 @pytest.fixture
-async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+async def client(app: FastAPI) -> AsyncIterator[httpx2.AsyncClient]:
     # raise_app_exceptions (default True): an exception escaping the app fails the test, which is
     # what the server would otherwise log with its full text.
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
 
 

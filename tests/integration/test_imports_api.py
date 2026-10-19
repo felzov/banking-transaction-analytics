@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
+import httpx2
 import pytest
 from factories import OTHER_OWNER_ID, OWNER_ID
 from fastapi import FastAPI
@@ -47,18 +47,18 @@ def set_limits(app: FastAPI, *, max_bytes: int = DEFAULT_MAX_BYTES, max_rows: in
     app.dependency_overrides[get_import_limits] = lambda: limits
 
 
-async def new_account(client: httpx.AsyncClient, name: str = "Current account") -> str:
+async def new_account(client: httpx2.AsyncClient, name: str = "Current account") -> str:
     response = await client.post("/accounts", json={"name": name})
     assert response.status_code == 201, response.text
     return response.json()["id"]
 
 
 async def upload(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     account_id: str,
     content: bytes | AsyncIterator[bytes],
     content_type: str | None = "text/csv",
-) -> httpx.Response:
+) -> httpx2.Response:
     headers = {"Content-Type": content_type} if content_type else {}
     return await client.post(f"/accounts/{account_id}/imports", content=content, headers=headers)
 
@@ -72,7 +72,7 @@ async def count(session: AsyncSession, model: type, **filters: object) -> int:
 
 
 async def test_valid_statement_is_imported(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     account_id = await new_account(client)
 
@@ -106,7 +106,7 @@ async def test_valid_statement_is_imported(
     assert await count(session, ImportRowError, import_job_id=uuid.UUID(body["id"])) == 0
 
 
-async def test_import_reads_back_by_location(client: httpx.AsyncClient) -> None:
+async def test_import_reads_back_by_location(client: httpx2.AsyncClient) -> None:
     created = await upload(client, await new_account(client), VALID)
 
     response = await client.get(created.headers["Location"])
@@ -117,21 +117,21 @@ async def test_import_reads_back_by_location(client: httpx.AsyncClient) -> None:
 
 async def test_location_includes_the_root_path_behind_a_proxy(app: FastAPI) -> None:
     # Mounted under a prefix (reverse proxy, root_path), the Location must point there too.
-    transport = httpx.ASGITransport(app=app, root_path="/api")
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    transport = httpx2.ASGITransport(app=app, root_path="/api")
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await upload(client, await new_account(client), VALID)
 
     assert response.headers["Location"] == f"http://test/api/imports/{response.json()['id']}"
 
 
-async def test_charset_parameter_is_accepted(client: httpx.AsyncClient) -> None:
+async def test_charset_parameter_is_accepted(client: httpx2.AsyncClient) -> None:
     response = await upload(client, await new_account(client), VALID, "text/csv; charset=utf-8")
 
     assert response.status_code == 201
 
 
 async def test_mixed_statement_keeps_valid_rows_and_reports_errors(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
 ) -> None:
     created = (await upload(client, await new_account(client), MIXED)).json()
 
@@ -156,7 +156,7 @@ async def test_mixed_statement_keeps_valid_rows_and_reports_errors(
 
 
 async def test_invariants_counts_match_rows_and_rows_are_disjoint(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     body = (await upload(client, await new_account(client), MIXED)).json()
     job_id = uuid.UUID(body["id"])
@@ -180,7 +180,7 @@ async def test_invariants_counts_match_rows_and_rows_are_disjoint(
 
 
 async def test_file_with_only_invalid_rows_completes_with_zero_valid_rows(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
 ) -> None:
     # No threshold (ADR 0004): every row error is reported instead of one generic failure.
     content = HEADER + b"2026-02-30,a,1.00,GBP\n2026-09-01,b,1.00,XYZ\n"
@@ -207,7 +207,7 @@ async def test_file_with_only_invalid_rows_completes_with_zero_valid_rows(
     ],
 )
 async def test_rejected_file_creates_a_failed_import_without_rows(
-    app: FastAPI, client: httpx.AsyncClient, session: AsyncSession, content: bytes, code: str
+    app: FastAPI, client: httpx2.AsyncClient, session: AsyncSession, content: bytes, code: str
 ) -> None:
     set_limits(app, max_rows=3)
 
@@ -225,7 +225,7 @@ async def test_rejected_file_creates_a_failed_import_without_rows(
     assert await count(session, ImportRowError) == 0
 
 
-async def test_exactly_max_rows_is_accepted(app: FastAPI, client: httpx.AsyncClient) -> None:
+async def test_exactly_max_rows_is_accepted(app: FastAPI, client: httpx2.AsyncClient) -> None:
     set_limits(app, max_rows=3)
 
     response = await upload(client, await new_account(client), HEADER + b"2026-09-01,a,1,GBP\n" * 3)
@@ -235,7 +235,7 @@ async def test_exactly_max_rows_is_accepted(app: FastAPI, client: httpx.AsyncCli
 
 
 async def test_default_row_limit_is_importable(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     # Boundary of the default limits and a rough timing check (see `pytest --durations`).
     rows = b"".join(b"2026-09-01,Row %d,-1.00,GBP\n" % index for index in range(DEFAULT_MAX_ROWS))
@@ -252,7 +252,7 @@ async def test_default_row_limit_is_importable(
 
 
 async def test_body_over_the_limit_is_refused(
-    app: FastAPI, client: httpx.AsyncClient, session: AsyncSession
+    app: FastAPI, client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     account_id = await new_account(client)
     set_limits(app, max_bytes=len(VALID))
@@ -267,7 +267,7 @@ async def test_body_over_the_limit_is_refused(
 
 
 async def test_chunked_body_over_the_limit_is_refused(
-    app: FastAPI, client: httpx.AsyncClient, session: AsyncSession
+    app: FastAPI, client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     account_id = await new_account(client)
     set_limits(app, max_bytes=100)
@@ -285,7 +285,7 @@ async def test_chunked_body_over_the_limit_is_refused(
 
 @pytest.mark.parametrize("content_type", ["application/json", "multipart/form-data", None])
 async def test_wrong_content_type_is_refused(
-    client: httpx.AsyncClient, session: AsyncSession, content_type: str | None
+    client: httpx2.AsyncClient, session: AsyncSession, content_type: str | None
 ) -> None:
     response = await upload(client, await new_account(client), VALID, content_type)
 
@@ -298,7 +298,7 @@ async def test_wrong_content_type_is_refused(
 
 
 async def test_same_file_twice_is_a_conflict(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     account_id = await new_account(client)
     first = (await upload(client, account_id, VALID)).json()
@@ -313,7 +313,7 @@ async def test_same_file_twice_is_a_conflict(
 
 
 async def test_overlapping_statement_reports_its_duplicates(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     # ADR 0006: rows the account already holds are skipped and counted, not stored again.
     account_id = await new_account(client)
@@ -332,7 +332,7 @@ async def test_overlapping_statement_reports_its_duplicates(
 
 
 async def test_same_statement_with_a_bom_imports_nothing_new(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     # Different bytes, so no file-level 409; every row is a duplicate instead.
     account_id = await new_account(client)
@@ -347,7 +347,7 @@ async def test_same_statement_with_a_bom_imports_nothing_new(
 
 
 async def test_default_row_limit_is_re_importable(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     # Every row conflicts on the dedup constraint: the worst case for ON CONFLICT DO NOTHING.
     # Rough timing in `pytest --durations` (ADR 0006).
@@ -362,7 +362,7 @@ async def test_default_row_limit_is_re_importable(
     assert await count(session, Transaction) == DEFAULT_MAX_ROWS
 
 
-async def test_same_file_into_another_account_is_allowed(client: httpx.AsyncClient) -> None:
+async def test_same_file_into_another_account_is_allowed(client: httpx2.AsyncClient) -> None:
     await upload(client, await new_account(client, "Current"), VALID)
 
     response = await upload(client, await new_account(client, "Savings"), VALID)
@@ -371,7 +371,7 @@ async def test_same_file_into_another_account_is_allowed(client: httpx.AsyncClie
 
 
 async def test_retry_after_an_internal_error_creates_a_new_import(
-    client: httpx.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    client: httpx2.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     account_id = await new_account(client)
     monkeypatch.setattr(import_service, "parse_statement_csv", broken_parser)
@@ -387,7 +387,7 @@ async def test_retry_after_an_internal_error_creates_a_new_import(
 
 
 async def test_same_rejected_file_again_returns_the_existing_failed_import(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     # A rejection is deterministic: the same bytes fail the same way. Re-sending them must not
     # add one failed job per attempt (a retry loop would grow the table without bound).
@@ -404,7 +404,7 @@ async def test_same_rejected_file_again_returns_the_existing_failed_import(
 
 
 async def test_rejected_file_is_imported_when_the_outcome_changes(
-    app: FastAPI, client: httpx.AsyncClient
+    app: FastAPI, client: httpx2.AsyncClient
 ) -> None:
     account_id = await new_account(client)
     content = HEADER + b"2026-09-01,a,1.00,GBP\n" * 4
@@ -423,7 +423,7 @@ async def test_rejected_file_is_imported_when_the_outcome_changes(
 
 
 async def test_another_owner_cannot_import_into_or_read_an_account(
-    app: FastAPI, client: httpx.AsyncClient, session: AsyncSession
+    app: FastAPI, client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     account_id = await new_account(client)
     import_id = (await upload(client, account_id, MIXED)).json()["id"]
@@ -441,7 +441,7 @@ async def test_another_owner_cannot_import_into_or_read_an_account(
     assert await count(session, ImportJob) == 1
 
 
-async def test_unknown_and_malformed_ids(client: httpx.AsyncClient) -> None:
+async def test_unknown_and_malformed_ids(client: httpx2.AsyncClient) -> None:
     assert (await upload(client, str(uuid.uuid4()), VALID)).status_code == 404
     assert (await client.get(f"/imports/{uuid.uuid4()}")).status_code == 404
     assert (await client.get(f"/imports/{uuid.uuid4()}/errors")).status_code == 404
@@ -471,7 +471,7 @@ def broken_parser(content: bytes, **limits: int) -> ParseResult:
 
 
 async def test_database_error_records_a_failed_import_and_leaks_nothing(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -497,7 +497,7 @@ async def test_database_error_records_a_failed_import_and_leaks_nothing(
 
 
 async def test_no_transaction_is_open_while_parsing(
-    client: httpx.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    client: httpx2.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Parsing is CPU-bound and slow for big files; holding a connection "idle in transaction"
     # meanwhile would let a few concurrent uploads drain the pool.
@@ -517,7 +517,7 @@ async def test_no_transaction_is_open_while_parsing(
 
 
 async def test_file_is_hashed_off_the_event_loop(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     on_event_loop_thread: list[bool] = []
     real_sha256 = import_service.hashlib.sha256
@@ -536,7 +536,7 @@ async def test_file_is_hashed_off_the_event_loop(
 
 
 async def test_failure_to_record_the_failed_import_still_returns_500(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -569,7 +569,7 @@ async def test_failure_to_record_the_failed_import_still_returns_500(
 
 
 async def test_row_error_query_is_owner_scoped_on_its_own(
-    client: httpx.AsyncClient, session: AsyncSession
+    client: httpx2.AsyncClient, session: AsyncSession
 ) -> None:
     # Through the API the job's owner is checked first, which would hide a missing filter here.
     job_id = uuid.UUID((await upload(client, await new_account(client), MIXED)).json()["id"])
@@ -587,14 +587,14 @@ async def test_row_error_query_is_owner_scoped_on_its_own(
 
 
 @pytest.fixture
-async def five_errors(client: httpx.AsyncClient) -> str:
+async def five_errors(client: httpx2.AsyncClient) -> str:
     content = HEADER + b"".join(b"2026-02-%d,x,1.00,GBP\n" % day for day in range(30, 35))
     body = (await upload(client, await new_account(client), content)).json()
     assert body["invalid_rows"] == 5  # rows 2..6
     return body["id"]
 
 
-async def test_errors_are_paged_by_row_number(client: httpx.AsyncClient, five_errors: str) -> None:
+async def test_errors_are_paged_by_row_number(client: httpx2.AsyncClient, five_errors: str) -> None:
     url = f"/imports/{five_errors}/errors"
 
     pages = []
@@ -608,7 +608,7 @@ async def test_errors_are_paged_by_row_number(client: httpx.AsyncClient, five_er
 
 
 async def test_page_of_exactly_the_remaining_rows_is_the_last(
-    client: httpx.AsyncClient, five_errors: str
+    client: httpx2.AsyncClient, five_errors: str
 ) -> None:
     page = (await client.get(f"/imports/{five_errors}/errors", params={"limit": 5})).json()
 
@@ -617,7 +617,7 @@ async def test_page_of_exactly_the_remaining_rows_is_the_last(
 
 
 async def test_page_after_the_last_row_is_empty(
-    client: httpx.AsyncClient, five_errors: str
+    client: httpx2.AsyncClient, five_errors: str
 ) -> None:
     page = (await client.get(f"/imports/{five_errors}/errors", params={"after_row": 100})).json()
 
@@ -626,7 +626,7 @@ async def test_page_after_the_last_row_is_empty(
 
 @pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 501}, {"after_row": 0}])
 async def test_invalid_paging_parameters(
-    client: httpx.AsyncClient, five_errors: str, params: dict
+    client: httpx2.AsyncClient, five_errors: str, params: dict
 ) -> None:
     response = await client.get(f"/imports/{five_errors}/errors", params=params)
 

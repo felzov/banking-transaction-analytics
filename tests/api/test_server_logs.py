@@ -9,7 +9,7 @@ import asyncio
 import logging
 import socket
 
-import httpx
+import httpx2
 import pytest
 import uvicorn
 from sqlalchemy.exc import DBAPIError
@@ -41,7 +41,7 @@ async def test_unhandled_database_error_never_reaches_the_server_log(
                     break
                 await asyncio.sleep(0.01)
             port = sock.getsockname()[1]
-            async with httpx.AsyncClient() as client:
+            async with httpx2.AsyncClient() as client:
                 response = await client.get(f"http://127.0.0.1:{port}/boom")
         finally:
             server.should_exit = True

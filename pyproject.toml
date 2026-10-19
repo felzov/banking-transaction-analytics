@@ -15,7 +15,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx>=0.27",
+    "httpx2>=2.13",
     "pytest>=8.3",
     "pytest-asyncio>=1.4",
     "ruff>=0.6",
@@ -45,3 +45,13 @@ markers = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
+# A deprecation fails the run instead of scrolling past (the lock pins versions, so this only
+# trips on a deliberate upgrade). Starlette, FastAPI and Uvicorn subclass UserWarning, not
+# DeprecationWarning, so they are named explicitly (tests/unit/test_warning_filters.py).
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    "error::starlette.exceptions.StarletteDeprecationWarning",
+    "error::fastapi.exceptions.FastAPIDeprecationWarning",
+    "error::uvicorn.config.UvicornDeprecationWarning",
+]

@@ -2,7 +2,7 @@
 
 import uuid
 
-import httpx
+import httpx2
 import pytest
 from factories import OTHER_OWNER_ID, OWNER_ID
 from fastapi import FastAPI
@@ -19,13 +19,13 @@ def act_as(app: FastAPI, owner_id: uuid.UUID) -> None:
     app.dependency_overrides[get_owner_id] = lambda: owner_id
 
 
-async def create(client: httpx.AsyncClient, name: str = "Current account") -> dict:
+async def create(client: httpx2.AsyncClient, name: str = "Current account") -> dict:
     response = await client.post("/accounts", json={"name": name})
     assert response.status_code == 201, response.text
     return response.json()
 
 
-async def test_create_normalizes_the_name_and_reads_back(client: httpx.AsyncClient) -> None:
+async def test_create_normalizes_the_name_and_reads_back(client: httpx2.AsyncClient) -> None:
     created = await create(client, "  Current\u00a0\t account ")
 
     assert created["name"] == "Current account"
@@ -37,7 +37,7 @@ async def test_create_normalizes_the_name_and_reads_back(client: httpx.AsyncClie
     assert response.json() == created
 
 
-async def test_name_with_emoji_and_rtl_mark_round_trips(client: httpx.AsyncClient) -> None:
+async def test_name_with_emoji_and_rtl_mark_round_trips(client: httpx2.AsyncClient) -> None:
     name = "Family \U0001f468\u200d\U0001f469 \u200f\u062d\u0633\u0627\u0628"
 
     assert (await create(client, name))["name"] == name
@@ -55,7 +55,7 @@ async def test_name_with_emoji_and_rtl_mark_round_trips(client: httpx.AsyncClien
     ],
 )
 async def test_invalid_name_is_rejected_without_echo(
-    client: httpx.AsyncClient, session: AsyncSession, name: str, code: str
+    client: httpx2.AsyncClient, session: AsyncSession, name: str, code: str
 ) -> None:
     response = await client.post("/accounts", json={"name": name})
 
@@ -66,7 +66,7 @@ async def test_invalid_name_is_rejected_without_echo(
     assert await session.scalar(select(func.count()).select_from(Account)) == 0
 
 
-async def test_name_of_exactly_100_characters_is_accepted(client: httpx.AsyncClient) -> None:
+async def test_name_of_exactly_100_characters_is_accepted(client: httpx2.AsyncClient) -> None:
     assert len((await create(client, "x" * 100))["name"]) == 100
 
 
@@ -80,7 +80,7 @@ async def test_name_of_exactly_100_characters_is_accepted(client: httpx.AsyncCli
     ids=["too-long-input", "extra-field", "missing-name"],
 )
 async def test_malformed_body_is_rejected_without_echo(
-    client: httpx.AsyncClient, body: dict
+    client: httpx2.AsyncClient, body: dict
 ) -> None:
     response = await client.post("/accounts", json=body)
 
@@ -90,7 +90,9 @@ async def test_malformed_body_is_rejected_without_echo(
     assert str(OTHER_OWNER_ID) not in response.text
 
 
-async def test_list_shows_only_the_owners_accounts(app: FastAPI, client: httpx.AsyncClient) -> None:
+async def test_list_shows_only_the_owners_accounts(
+    app: FastAPI, client: httpx2.AsyncClient
+) -> None:
     mine = {(await create(client, name))["id"] for name in ("Current", "Savings")}
     act_as(app, OTHER_OWNER_ID)
     theirs = (await create(client, "Other"))["id"]
@@ -102,7 +104,9 @@ async def test_list_shows_only_the_owners_accounts(app: FastAPI, client: httpx.A
     assert theirs not in listed
 
 
-async def test_another_owners_account_is_not_found(app: FastAPI, client: httpx.AsyncClient) -> None:
+async def test_another_owners_account_is_not_found(
+    app: FastAPI, client: httpx2.AsyncClient
+) -> None:
     account_id = (await create(client))["id"]
 
     act_as(app, OTHER_OWNER_ID)
@@ -114,7 +118,7 @@ async def test_another_owners_account_is_not_found(app: FastAPI, client: httpx.A
     }
 
 
-async def test_unknown_and_malformed_account_ids(client: httpx.AsyncClient) -> None:
+async def test_unknown_and_malformed_account_ids(client: httpx2.AsyncClient) -> None:
     unknown = await client.get(f"/accounts/{uuid.uuid4()}")
     malformed = await client.get("/accounts/not-a-uuid")
 
