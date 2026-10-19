@@ -1,6 +1,7 @@
 # ADR 0003 — Persistence: ownership in the schema, CHECK over ENUM, isolated test databases
 
-- Status: Accepted; the file-hash uniqueness rule is superseded by ADR 0004 (migration 0002)
+- Status: Accepted; the file-hash uniqueness rule is superseded by ADR 0004 (migration 0002);
+  item 1 amended by ADR 0007 (owner_id references users, migration 0004)
 - Date: 2026-10-16
 
 ## Context
@@ -14,6 +15,8 @@ deduplication in Phase 4, a second transaction source (ledger) in Phase 7.
 
 1. **owner_id everywhere.** Every table has `owner_id UUID NOT NULL`, even before auth exists
    (tests use a fixed UUID). There is no users table and no FK on `owner_id` until Phase 5.
+   → Phase 5 (ADR 0007): `users` is the one table without `owner_id`; `accounts.owner_id` and
+   `api_tokens.owner_id` reference `users(id)`, and the composite keys carry it to the rest.
 2. **Ownership enforced by composite foreign keys**, not only by queries:
    - `import_jobs (owner_id, account_id) → accounts (owner_id, id)`
    - `transactions (owner_id, account_id, import_job_id) → import_jobs (owner_id, account_id, id)`:

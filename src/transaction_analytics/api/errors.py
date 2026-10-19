@@ -25,13 +25,17 @@ from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from transaction_analytics.data.errors import constraint_name, error_kind
-from transaction_analytics.domain.errors import AccountValidationError
+from transaction_analytics.domain.errors import CodedValidationError
 from transaction_analytics.services.errors import (
     AccountNotFoundError,
     DuplicateImportError,
     ImportNotFoundError,
     ImportProcessingError,
+    NotAuthenticatedError,
     ServiceError,
+    TokenNotFoundError,
+    UserDisabledError,
+    UserNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +44,11 @@ logger = logging.getLogger(__name__)
 _LOGGED_FRAMES = 5
 
 SERVICE_ERROR_STATUS: dict[type[ServiceError], int] = {
+    NotAuthenticatedError: 401,
+    UserNotFoundError: 404,
+    # Only the CLI raises it (issue-token); a disabled user's requests are 401.
+    UserDisabledError: 409,
+    TokenNotFoundError: 404,
     AccountNotFoundError: 404,
     ImportNotFoundError: 404,
     DuplicateImportError: 409,
@@ -91,10 +100,19 @@ async def _service_error(request: Request, exc: ServiceError) -> JSONResponse:
         extra["import_id"] = str(exc.existing_import_id)
     elif isinstance(exc, ImportProcessingError) and exc.failed_import_id is not None:
         extra["import_id"] = str(exc.failed_import_id)
-    return error_response(SERVICE_ERROR_STATUS.get(type(exc), 500), exc.code, exc.message, **extra)
+    headers = None
+    if isinstance(exc, NotAuthenticatedError):
+        # RFC 6750 section 3.1: name the scheme; add invalid_token only when a token was sent.
+        # Unknown, expired and revoked tokens get the same value, so it reveals nothing more.
+        headers = {
+            "WWW-Authenticate": 'Bearer error="invalid_token"' if exc.token_sent else "Bearer"
+        }
+    return error_response(
+        SERVICE_ERROR_STATUS.get(type(exc), 500), exc.code, exc.message, headers=headers, **extra
+    )
 
 
-async def _account_validation_error(request: Request, exc: AccountValidationError) -> JSONResponse:
+async def _coded_validation_error(request: Request, exc: CodedValidationError) -> JSONResponse:
     return error_response(422, exc.code, exc.message)
 
 
@@ -173,6 +191,6 @@ def install_error_handling(app: FastAPI) -> None:
     app.add_middleware(SafeErrorMiddleware)
     app.add_exception_handler(ApiError, _api_error)
     app.add_exception_handler(ServiceError, _service_error)
-    app.add_exception_handler(AccountValidationError, _account_validation_error)
+    app.add_exception_handler(CodedValidationError, _coded_validation_error)
     app.add_exception_handler(RequestValidationError, _request_validation_error)
     app.add_exception_handler(HTTPException, _http_error)

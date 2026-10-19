@@ -6,7 +6,9 @@ proves nothing reached the server's exception logging.
 """
 
 import logging
+import uuid
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import fastapi.dependencies.utils as fastapi_dependency_utils
@@ -16,6 +18,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy.exc import DBAPIError
 
+from transaction_analytics.api import deps
 from transaction_analytics.api.deps import (
     get_app_settings,
     get_import_limits,
@@ -25,12 +28,21 @@ from transaction_analytics.api.deps import (
 from transaction_analytics.api.errors import SERVICE_ERROR_STATUS
 from transaction_analytics.api.imports import router as imports_router
 from transaction_analytics.api.limits import MAX_JSON_BYTES, is_upload_path
+from transaction_analytics.domain.errors import (
+    CodedValidationError,
+    LabelErrorCode,
+    LabelValidationError,
+    TokenErrorCode,
+    TokenValidationError,
+)
 from transaction_analytics.main import create_app
 from transaction_analytics.services.errors import ServiceError
 from transaction_analytics.services.imports import ImportLimits
-from transaction_analytics.settings import DEFAULT_DEV_OWNER_ID, Settings
+from transaction_analytics.settings import Settings
 
 MARKER = "LEAK-ME-9012"
+OWNER_ID = uuid.UUID("00000000-0000-4000-8000-000000000001")
+TOKEN = "bta_" + "A" * 43
 MAX_BYTES = 64
 IMPORT_URL = "/accounts/00000000-0000-4000-8000-0000000000aa/imports"
 
@@ -41,12 +53,17 @@ class _NoDatabase:
     def __getattr__(self, name: str) -> object:
         raise AssertionError(f"database used: {name}")
 
+    def in_transaction(self) -> bool:
+        # The one question that needs no database: the upload route asks it before streaming
+        # (services.imports.release_connection). Nothing was queried, so no.
+        return False
+
 
 @pytest.fixture
 def app() -> FastAPI:
     app = create_app()
     app.dependency_overrides[get_session] = _NoDatabase
-    app.dependency_overrides[get_owner_id] = lambda: DEFAULT_DEV_OWNER_ID
+    app.dependency_overrides[get_owner_id] = lambda: OWNER_ID
     app.dependency_overrides[get_import_limits] = lambda: ImportLimits(
         max_bytes=MAX_BYTES, max_rows=10
     )
@@ -312,11 +329,45 @@ async def test_request_path_uses_no_threadpool(monkeypatch: pytest.MonkeyPatch) 
     async def no_database() -> _NoDatabase:
         return _NoDatabase()
 
-    # Only leaf dependencies are replaced, with async ones; get_owner_id and get_import_limits
-    # run for real. The 415 is raised after every dependency has been solved.
+    async def authenticate(session: object, *, token: str | None) -> SimpleNamespace:
+        assert token == TOKEN
+        return SimpleNamespace(id=OWNER_ID)
+
+    # Only leaf dependencies are replaced, with async ones; get_owner_id (with its bearer parsing)
+    # and get_import_limits run for real. The token lookup is a service coroutine, never run in
+    # the threadpool, so it is the one piece stubbed. The 415 comes after every dependency.
     app.dependency_overrides[get_app_settings] = settings
     app.dependency_overrides[get_session] = no_database
-    response = TestClient(app).post(IMPORT_URL, content=b"a", headers={"Content-Type": "x/y"})
+    monkeypatch.setattr(deps.auth_service, "authenticate", authenticate)
+    response = TestClient(app).post(
+        IMPORT_URL,
+        content=b"a",
+        headers={"Content-Type": "x/y", "Authorization": f"Bearer {TOKEN}"},
+    )
 
     assert response.status_code == 415
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LabelValidationError(LabelErrorCode.REQUIRED, "Name is required."),
+        TokenValidationError(
+            TokenErrorCode.LIFETIME_OUT_OF_RANGE, "Token lifetime must be between 1 and 365 days."
+        ),
+    ],
+    ids=["label", "token"],
+)
+def test_every_validation_error_is_a_422_with_its_code(
+    app: FastAPI, error: CodedValidationError
+) -> None:
+    # Review fix: only AccountValidationError had a handler; the others answered 500.
+    @app.get("/boom/validation")
+    async def invalid() -> None:
+        raise error
+
+    response = TestClient(app).get("/boom/validation")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": {"code": error.code, "message": error.message}}

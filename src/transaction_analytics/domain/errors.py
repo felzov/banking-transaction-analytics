@@ -42,22 +42,46 @@ class AccountErrorCode(StrEnum):
     NAME_INVALID_CHARACTERS = "name_invalid_characters"
 
 
-class FieldValidationError(ValueError):
-    """A single value failed validation. Carries a stable code, not the raw value."""
+class LabelErrorCode(StrEnum):
+    """Why a name for an account, user or API token is invalid (domain/labels.py)."""
 
-    def __init__(self, code: FieldErrorCode, message: str) -> None:
+    REQUIRED = "required"
+    TOO_LONG = "too_long"
+    INVALID_CHARACTERS = "invalid_characters"
+
+
+class TokenErrorCode(StrEnum):
+    """Why an API token cannot be issued as requested."""
+
+    LIFETIME_OUT_OF_RANGE = "lifetime_out_of_range"
+
+
+class CodedValidationError[C: StrEnum](ValueError):
+    """Input failed validation. Carries a stable code and fixed text, never the raw value.
+
+    The API answers every subclass with 422 (api/errors.py); the CLI prints the message.
+    """
+
+    def __init__(self, code: C, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
 
 
-class AccountValidationError(ValueError):
-    """An account name failed validation. Carries a stable code, not the raw value."""
+class FieldValidationError(CodedValidationError[FieldErrorCode]):
+    """A single value of a statement row failed validation."""
 
-    def __init__(self, code: AccountErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+
+class AccountValidationError(CodedValidationError[AccountErrorCode]):
+    """An account name failed validation."""
+
+
+class LabelValidationError(CodedValidationError[LabelErrorCode]):
+    """A name (account, user, API token) failed validation."""
+
+
+class TokenValidationError(CodedValidationError[TokenErrorCode]):
+    """An API token request failed validation."""
 
 
 class FileRejectedError(Exception):

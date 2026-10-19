@@ -9,8 +9,11 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from transaction_analytics.data.models import User
+from transaction_analytics.services import auth as auth_service
 from transaction_analytics.services.imports import ImportLimits
 from transaction_analytics.settings import Settings, get_settings
 
@@ -29,15 +32,37 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def get_owner_id(settings: SettingsDep) -> uuid.UUID:
-    """Placeholder until authentication (Phase 5): every request acts as one configured owner."""
-    return settings.dev_owner_id
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+# Parses "Authorization: Bearer <token>" and documents the scheme in OpenAPI. auto_error=False: a
+# missing or non-Bearer header gets the same 401, in the error envelope, as an unknown token.
+_bearer = HTTPBearer(
+    auto_error=False,
+    bearerFormat="bta_<43 characters>",
+    description="An API token issued with the CLI (README, Authentication).",
+)
+
+
+async def get_current_user(
+    session: SessionDep,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> User:
+    """The user whose API token the request carries (ADR 0007); 401 otherwise."""
+    token = None if credentials is None else credentials.credentials
+    return await auth_service.authenticate(session, token=token)
+
+
+CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+async def get_owner_id(user: CurrentUserDep) -> uuid.UUID:
+    """What routes and services scope by. Tests that are not about authentication override this."""
+    return user.id
 
 
 async def get_import_limits(settings: SettingsDep) -> ImportLimits:
     return ImportLimits(max_bytes=settings.import_max_bytes, max_rows=settings.import_max_rows)
 
 
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 OwnerIdDep = Annotated[uuid.UUID, Depends(get_owner_id)]
 ImportLimitsDep = Annotated[ImportLimits, Depends(get_import_limits)]

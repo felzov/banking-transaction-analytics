@@ -4,7 +4,7 @@
 
 Import, validate, normalize, deduplicate and analyze bank-statement transactions.
 
-**Status: early development (Phase 4 of 8).** What exists today:
+**Status: early development (Phase 5 of 8).** What exists today:
 
 - `/health` liveness endpoint (FastAPI).
 - A pure, fully unit-tested domain layer: a CSV statement parser that returns valid transactions
@@ -18,8 +18,11 @@ Import, validate, normalize, deduplicate and analyze bank-statement transactions
 - Deduplication on re-import: rows an account already holds are skipped and counted, so corrected,
   overlapping or re-saved statements can be uploaded safely
   ([ADR 0006](docs/adr/0006-deduplication.md)).
+- Authentication with personal API tokens (`Authorization: Bearer ...`), issued and revoked with an
+  operator CLI. Every owner is a user; another user's data is invisible
+  ([ADR 0007](docs/adr/0007-authentication.md)).
 
-Not built yet: authentication, analytics, listing transactions.
+Not built yet: analytics, listing transactions, self-service sign-up or password login.
 The target users (accountants, bookkeepers, freelancers, small businesses) are hypotheses that
 have **not** been validated.
 
@@ -51,35 +54,70 @@ make db-down           # stop it (data stays in the db-data volume)
   ([ADR 0003](docs/adr/0003-persistence-schema.md)).
 - Print the SQL without running it: `uv run alembic upgrade head --sql`.
 
-## API
+## Authentication
 
-Start the database and the app (`make db-up && make db-migrate && make run`), then:
+Every endpoint except `/health` needs an API token ([ADR 0007](docs/adr/0007-authentication.md)).
+Users and tokens are managed with the CLI, which uses `DATABASE_URL` like the app:
 
 ```bash
+uv run python -m transaction_analytics.cli create-user --name "Max"        # prints the user id
+uv run python -m transaction_analytics.cli issue-token --user-id <user_id> --name laptop
+# prints the token once (bta_...); store it now, it cannot be shown again. --days 1-365, default 90
+uv run python -m transaction_analytics.cli list-tokens --user-id <user_id>  # id, state, expiry, name
+uv run python -m transaction_analytics.cli revoke-token --user-id <user_id> --token-id <token_id>
+uv run python -m transaction_analytics.cli disable-user --user-id <user_id> # refuses all its tokens
+```
+
+`make cli args="create-user --name Max"` does the same. Only the SHA-256 of a token is stored.
+Data imported before Phase 5 belongs to the old placeholder owner, which migration 0004 turned into
+a user: `issue-token --user-id 00000000-0000-4000-8000-000000000001` (the former `DEV_OWNER_ID`
+default) gets it back.
+
+A missing, malformed, unknown, expired or revoked token, or a disabled user, all get the same
+`401 {"error": {"code": "not_authenticated", ...}}`. `WWW-Authenticate` is `Bearer` without a token
+and `Bearer error="invalid_token"` when one was sent (RFC 6750). A disabled user gets no new tokens.
+
+## API
+
+Start the database and the app (`make db-up && make db-migrate && make run`), get a token (above),
+then:
+
+```bash
+export TOKEN=bta_...   # from issue-token
+AUTH="Authorization: Bearer $TOKEN"
+
+curl -s localhost:8000/me -H "$AUTH"
+# -> {"id": "<user_id>", "name": "Max", "created_at": "..."}
+
 # Create an account
-curl -s -X POST localhost:8000/accounts -H 'Content-Type: application/json' \
+curl -s -X POST localhost:8000/accounts -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name": "Current account"}'
 # -> {"id": "<account_id>", "name": "Current account", "created_at": "..."}
 
 # Upload a statement: the raw file as the body, Content-Type text/csv (not multipart)
-curl -s -X POST localhost:8000/accounts/<account_id>/imports \
+curl -s -X POST localhost:8000/accounts/<account_id>/imports -H "$AUTH" \
   -H 'Content-Type: text/csv' --data-binary @tests/fixtures/statement_mixed_errors.csv
 # -> 201 {"id": "<import_id>", "status": "completed", "total_rows": 8, "valid_rows": 2,
 #         "invalid_rows": 6, "duplicate_rows": 0, "imported_rows": 2, "error": null, ...}
 
-curl -s localhost:8000/imports/<import_id>
-curl -s 'localhost:8000/imports/<import_id>/errors?limit=100'   # page with after_row=<next_after_row>
+curl -s localhost:8000/imports/<import_id> -H "$AUTH"
+curl -s 'localhost:8000/imports/<import_id>/errors?limit=100' -H "$AUTH"   # page with after_row=
 ```
 
 Interactive docs: http://127.0.0.1:8000/docs.
 
 | Endpoint | Success | Errors |
 |---|---|---|
-| `POST /accounts` | 201 | 413 (body over 64 KiB), 422 |
-| `GET /accounts`, `GET /accounts/{id}` | 200 | 404 |
-| `POST /accounts/{id}/imports` | 201 (also when the file is rejected: `status: "failed"`); 200 when the same file was already rejected with the same error | 404, 409 duplicate, 413, 415, 500 |
-| `GET /imports/{id}` | 200 | 404 |
-| `GET /imports/{id}/errors?after_row=&limit=` | 200 | 404, 422 |
+| `GET /me` | 200 | 401 |
+| `POST /accounts` | 201 | 401, 413 (body over 64 KiB), 422 |
+| `GET /accounts`, `GET /accounts/{id}` | 200 | 401, 404 |
+| `POST /accounts/{id}/imports` | 201 (also when the file is rejected: `status: "failed"`); 200 when the same file was already rejected with the same error | 401, 404, 409 duplicate, 413, 415, 500 |
+| `GET /imports/{id}` | 200 | 401, 404 |
+| `GET /imports/{id}/errors?after_row=&limit=` | 200 | 401, 404, 422 |
+| `GET /health` | 200 | — (no token needed) |
+
+An upload without a valid token gets 401 before its body is read. A JSON body over 64 KiB gets 413
+before authentication (the size limit sits in front of the app).
 
 - The import runs synchronously in the request. Valid rows are stored and every invalid row is
   reported; there is no error threshold.
@@ -93,8 +131,8 @@ Interactive docs: http://127.0.0.1:8000/docs.
   with the same error, the earlier failed import is returned (200) instead of a new one.
 - Errors are `{"error": {"code", "message"}}` with fixed text, never values from the request or
   the file. Another owner's account or import is 404.
-- **No authentication yet**: every request acts as `DEV_OWNER_ID` (a fixed default). Keep the
-  server on localhost.
+- There is no TLS and no rate limiting yet (Phase 8): keep the server on localhost or behind a proxy
+  that provides both.
 
 ## Tests
 
@@ -156,11 +194,12 @@ Codes are defined in `src/transaction_analytics/domain/errors.py`.
 
 ```text
 src/transaction_analytics/
-  domain/      pure logic (no I/O): money, field rules, CSV parser, dedup keys, account names,
-               import outcome
+  domain/      pure logic (no I/O): money, field rules, CSV parser, dedup keys, names, API token
+               format, import outcome
   data/        SQLAlchemy models, engine/session factories, owner-scoped queries, DB error helpers
-  services/    use cases and transaction boundaries (accounts, imports)
-  api/         FastAPI routers (thin), dependencies, schemas, error handling
+  services/    use cases and transaction boundaries (accounts, imports, users and tokens)
+  api/         FastAPI routers (thin), dependencies (incl. authentication), schemas, error handling
+  cli.py       operator commands for users and API tokens (thin, like api/)
   settings.py  configuration from environment / .env
   main.py      app factory
 migrations/    Alembic environment and versions
@@ -182,7 +221,9 @@ docs/adr/      architecture decision records
   second is skipped as a duplicate.
 - Duplicates stored before Phase 4 (migration 0003) stay.
 - The parser holds the whole file in memory (bounded by the 5 MiB limit).
-- No authentication. Every request acts as one configured owner (`DEV_OWNER_ID`) until Phase 5.
+- Authentication is API tokens only, managed by an operator with shell and database access: no
+  sign-up, no password login, no token endpoints. No rate limiting of failed attempts and no
+  "last used" time (ADR 0007).
 - Imports are synchronous: the client waits while the file is parsed and stored (about 4 s for
   50 000 rows in the integration test); a database connection is held only for the insert. `started_at` and `finished_at` are
   the same instant (the import transaction's start), not a duration.
@@ -203,3 +244,4 @@ docs/adr/      architecture decision records
 - [ADR 0004 — Import pipeline: synchronous, one transaction, partial import](docs/adr/0004-import-pipeline.md)
 - [ADR 0005 — API conventions: error envelope, no echoed values, placeholder owner](docs/adr/0005-api-conventions.md)
 - [ADR 0006 — Deduplication: exact keys, multiset union, enforced by a unique constraint](docs/adr/0006-deduplication.md)
+- [ADR 0007 — Authentication: opaque API tokens, stored hashed, issued by a CLI](docs/adr/0007-authentication.md)

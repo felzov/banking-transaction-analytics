@@ -14,6 +14,34 @@ class ServiceError(Exception):
         super().__init__(self.message)
 
 
+class NotAuthenticatedError(ServiceError):
+    """No live API token. One error for every reason (missing, unknown, expired, revoked, user
+    disabled), so a response does not tell a caller which tokens exist."""
+
+    code = "not_authenticated"
+    message = "A valid API token is required."
+
+    def __init__(self, *, token_sent: bool) -> None:
+        super().__init__()
+        # Only for the WWW-Authenticate header (RFC 6750): never which check failed.
+        self.token_sent = token_sent
+
+
+class UserNotFoundError(ServiceError):
+    code = "user_not_found"
+    message = "User not found."
+
+
+class UserDisabledError(ServiceError):
+    code = "user_disabled"
+    message = "User is disabled."
+
+
+class TokenNotFoundError(ServiceError):
+    code = "token_not_found"
+    message = "API token not found."
+
+
 class AccountNotFoundError(ServiceError):
     code = "account_not_found"
     message = "Account not found."

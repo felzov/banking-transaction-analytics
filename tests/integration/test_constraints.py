@@ -8,6 +8,7 @@ import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 
 import pytest
@@ -17,25 +18,30 @@ from factories import (
     OWNER_ID,
     STARTED,
     account,
+    api_token,
     completed,
     failed,
     job,
     row_error,
     sha256_hex,
     transaction,
+    user,
 )
 from sqlalchemy import delete, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from transaction_analytics.data.errors import constraint_name
-from transaction_analytics.data.models import Account, Base, ImportJob, Transaction
+from transaction_analytics.data.models import Account, Base, ImportJob, Transaction, User
 from transaction_analytics.domain.csv_parser import REQUIRED_COLUMNS
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
 from transaction_analytics.domain.money import Currency
 
 pytestmark = pytest.mark.integration
+
+
+LONG_AGO = datetime(2000, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -300,6 +306,40 @@ VIOLATIONS: list[tuple[str, Build, str]] = [
         lambda w: [row_error(w.job, row_number=3)],
         "uq_import_row_errors_import_job_id_row_number",
     ),
+    # owners (ADR 0007): accounts.owner_id must name a user; the other tables follow through
+    # their composite keys to accounts
+    ("account: unknown owner", lambda w: [account(uuid.uuid4())], "fk_accounts_owner"),
+    ("user: blank name", lambda w: [user(name="   ")], "ck_users_name_valid"),
+    ("user: name > 100", lambda w: [user(name="x" * 101)], "ck_users_name_valid"),
+    ("user: control character", lambda w: [user(name="Max\x07")], "ck_users_name_valid"),
+    (
+        "user: disabled before created",
+        lambda w: [user(disabled_at=LONG_AGO)],
+        "ck_users_disabled_after_created",
+    ),
+    # api_tokens
+    ("token: unknown owner", lambda w: [api_token(uuid.uuid4())], "fk_api_tokens_owner"),
+    ("token: blank name", lambda w: [api_token(name="")], "ck_api_tokens_name_valid"),
+    (
+        "token: short hash",
+        lambda w: [api_token(token_sha256=b"x" * 31)],
+        "ck_api_tokens_token_sha256_length",
+    ),
+    (
+        "token: same hash twice",
+        lambda w: [api_token(token_sha256=b"x" * 32), api_token(token_sha256=b"x" * 32)],
+        "uq_api_tokens_token_sha256",
+    ),
+    (
+        "token: expires before created",
+        lambda w: [api_token(expires_at=LONG_AGO)],
+        "ck_api_tokens_expires_after_created",
+    ),
+    (
+        "token: revoked before created",
+        lambda w: [api_token(revoked_at=LONG_AGO)],
+        "ck_api_tokens_revoked_after_created",
+    ),
 ]
 
 
@@ -393,6 +433,30 @@ async def test_deleting_an_account_with_imports_is_restricted(session: AsyncSess
             await session.execute(delete(Account).where(Account.id == acc.id))
 
     assert constraint_name(exc.value) == "fk_import_jobs_account"
+
+
+@pytest.mark.parametrize(
+    ("build", "expected"),
+    [
+        (lambda owner: account(owner.id), "fk_accounts_owner"),
+        (lambda owner: api_token(owner.id), "fk_api_tokens_owner"),
+    ],
+    ids=["with-accounts", "with-tokens"],
+)
+async def test_deleting_a_user_with_data_is_restricted(
+    session: AsyncSession, build: Callable[[User], Base], expected: str
+) -> None:
+    owner = user()
+    session.add(owner)
+    await session.flush()
+    session.add(build(owner))
+    await session.flush()
+
+    with pytest.raises(IntegrityError) as exc:
+        async with session.begin_nested():
+            await session.execute(delete(User).where(User.id == owner.id))
+
+    assert constraint_name(exc.value) == expected
 
 
 async def test_deleting_an_import_job_with_transactions_is_restricted(

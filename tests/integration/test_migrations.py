@@ -27,7 +27,7 @@ from transaction_analytics.domain.money import Currency
 
 pytestmark = pytest.mark.integration
 
-APP_TABLES = {"accounts", "import_jobs", "transactions", "import_row_errors"}
+APP_TABLES = {"accounts", "import_jobs", "transactions", "import_row_errors", "users", "api_tokens"}
 
 
 def _run_sync[T](url: URL, function: Callable[[Connection], T]) -> T:
@@ -252,6 +252,48 @@ def test_downgrade_of_0003_restores_the_0002_schema(
     assert not {"fingerprint", "occurrence"} & columns
     assert "uq_transactions_dedup" not in uniques
     assert "duplicate_rows" not in job_columns
+    stored = _run_sync(
+        empty_database_url, lambda c: c.scalar(text("SELECT count(*) FROM transactions"))
+    )
+    assert stored == len(LEGACY_ROWS)
+
+
+def _users(connection: Connection) -> dict[uuid.UUID, str]:
+    return {row.id: row.name for row in connection.execute(text("SELECT id, name FROM users"))}
+
+
+def _account_owner_fks(connection: Connection) -> list[str]:
+    return [fk["name"] for fk in inspect(connection).get_foreign_keys("accounts")]
+
+
+def test_existing_owners_become_users(empty_database_url: URL, migration_config: Config) -> None:
+    # Phase 3-4 data belongs to DEV_OWNER_ID, which was never a user. It must stay reachable.
+    command.upgrade(migration_config, "0002")
+    accounts = _run_sync(empty_database_url, _insert_legacy_rows)  # two accounts, one owner
+    owner = _run_sync(
+        empty_database_url,
+        lambda c: c.scalar(
+            text("SELECT owner_id FROM accounts WHERE id = :a"), {"a": accounts["a"]}
+        ),
+    )
+
+    command.upgrade(migration_config, "0004")
+
+    assert _run_sync(empty_database_url, _users) == {owner: "Migrated owner"}
+    assert "fk_accounts_owner" in _run_sync(empty_database_url, _account_owner_fks)
+
+
+def test_downgrade_of_0004_restores_the_0003_schema(
+    empty_database_url: URL, migration_config: Config
+) -> None:
+    command.upgrade(migration_config, "0002")
+    _run_sync(empty_database_url, _insert_legacy_rows)
+    command.upgrade(migration_config, "head")
+
+    command.downgrade(migration_config, "0003")
+
+    assert _tables(empty_database_url) == APP_TABLES - {"users", "api_tokens"} | {"alembic_version"}
+    assert "fk_accounts_owner" not in _run_sync(empty_database_url, _account_owner_fks)
     stored = _run_sync(
         empty_database_url, lambda c: c.scalar(text("SELECT count(*) FROM transactions"))
     )
