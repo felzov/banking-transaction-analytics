@@ -4,8 +4,10 @@ Each command runs in its own session, like separate invocations; authenticate is
 another fresh session, as a request would.
 """
 
+import socket
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from factories import OWNER_ID
@@ -145,13 +147,32 @@ async def test_disabled_user_gets_no_new_token_and_shows_as_disabled(
 
 
 async def test_unreachable_database_is_one_line_without_details(
-    committed_database_url: str, capsys: pytest.CaptureFixture[str]
+    committed_database_url: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Review fix: connection failures are not DBAPIErrors; they escaped as a traceback naming the
     # host, port and user. Wrong password (a DBAPIError) and unknown host are covered too.
+    # The class depends on how many addresses the host resolves to: one refused address raises
+    # ConnectionRefusedError; several (localhost as ::1 and 127.0.0.1, as on CI) make asyncio
+    # raise OSError("Multiple exceptions: ...") with every address in its text. Both are pinned.
+    real_getaddrinfo = socket.getaddrinfo
+
+    def dual_stack(host: object, *args: Any, **kwargs: Any) -> Any:
+        if host == "dual-stack.test":
+            return real_getaddrinfo("::1", *args, **kwargs) + real_getaddrinfo(
+                "127.0.0.1", *args, **kwargs
+            )
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", dual_stack)
     url = make_url(committed_database_url)
     for broken, expected in [
-        (url.set(port=1), "Error: cannot reach the database (ConnectionRefusedError)."),
+        (
+            url.set(host="127.0.0.1", port=1),
+            "Error: cannot reach the database (ConnectionRefusedError).",
+        ),
+        (url.set(host="dual-stack.test", port=1), "Error: cannot reach the database (OSError)."),
         (url.set(host="no-such-host.invalid"), "Error: cannot reach the database (gaierror)."),
         (
             url.set(password="wrong-password-for-test"),
@@ -167,7 +188,7 @@ async def test_unreachable_database_is_one_line_without_details(
             await engine.dispose()
 
         assert (status, out, err.strip()) == (1, "", expected)
-        for detail in (str(broken.host), str(broken.port), str(broken.username)):
+        for detail in (str(broken.host), str(broken.port), str(broken.username), "::1", "127.0"):
             assert detail not in err
 
 
