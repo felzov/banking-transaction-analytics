@@ -1,6 +1,6 @@
 .RECIPEPREFIX = >
 
-.PHONY: install lint format test test-integration check check-all run db-up db-down db-migrate db-revision
+.PHONY: install lint format test test-integration check check-all run cli db-up db-down db-migrate db-revision
 
 install:
 > uv sync
@@ -27,6 +27,10 @@ check-all: check test-integration
 
 run:
 > uv run uvicorn transaction_analytics.main:app --reload
+
+# Users and API tokens, e.g. make cli args="create-user --name Max" (README "Authentication").
+cli:
+> uv run python -m transaction_analytics.cli $(args)
 
 db-up:
 > docker compose up -d --wait db

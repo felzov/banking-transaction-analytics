@@ -42,6 +42,20 @@ class AccountErrorCode(StrEnum):
     NAME_INVALID_CHARACTERS = "name_invalid_characters"
 
 
+class LabelErrorCode(StrEnum):
+    """Why a name for an account, user or API token is invalid (domain/labels.py)."""
+
+    REQUIRED = "required"
+    TOO_LONG = "too_long"
+    INVALID_CHARACTERS = "invalid_characters"
+
+
+class TokenErrorCode(StrEnum):
+    """Why an API token cannot be issued as requested."""
+
+    LIFETIME_OUT_OF_RANGE = "lifetime_out_of_range"
+
+
 class FieldValidationError(ValueError):
     """A single value failed validation. Carries a stable code, not the raw value."""
 
@@ -55,6 +69,24 @@ class AccountValidationError(ValueError):
     """An account name failed validation. Carries a stable code, not the raw value."""
 
     def __init__(self, code: AccountErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class LabelValidationError(ValueError):
+    """A name failed validation. Carries a stable code, not the raw value."""
+
+    def __init__(self, code: LabelErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class TokenValidationError(ValueError):
+    """An API token request failed validation."""
+
+    def __init__(self, code: TokenErrorCode, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message

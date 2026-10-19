@@ -14,6 +14,24 @@ class ServiceError(Exception):
         super().__init__(self.message)
 
 
+class NotAuthenticatedError(ServiceError):
+    """No live API token. One error for every reason (missing, unknown, expired, revoked, user
+    disabled), so a response does not tell a caller which tokens exist."""
+
+    code = "not_authenticated"
+    message = "A valid API token is required."
+
+
+class UserNotFoundError(ServiceError):
+    code = "user_not_found"
+    message = "User not found."
+
+
+class TokenNotFoundError(ServiceError):
+    code = "token_not_found"
+    message = "API token not found."
+
+
 class AccountNotFoundError(ServiceError):
     code = "account_not_found"
     message = "Account not found."

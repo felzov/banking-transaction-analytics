@@ -31,7 +31,10 @@ from transaction_analytics.services.errors import (
     DuplicateImportError,
     ImportNotFoundError,
     ImportProcessingError,
+    NotAuthenticatedError,
     ServiceError,
+    TokenNotFoundError,
+    UserNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,9 @@ logger = logging.getLogger(__name__)
 _LOGGED_FRAMES = 5
 
 SERVICE_ERROR_STATUS: dict[type[ServiceError], int] = {
+    NotAuthenticatedError: 401,
+    UserNotFoundError: 404,
+    TokenNotFoundError: 404,
     AccountNotFoundError: 404,
     ImportNotFoundError: 404,
     DuplicateImportError: 409,
@@ -91,7 +97,11 @@ async def _service_error(request: Request, exc: ServiceError) -> JSONResponse:
         extra["import_id"] = str(exc.existing_import_id)
     elif isinstance(exc, ImportProcessingError) and exc.failed_import_id is not None:
         extra["import_id"] = str(exc.failed_import_id)
-    return error_response(SERVICE_ERROR_STATUS.get(type(exc), 500), exc.code, exc.message, **extra)
+    # RFC 9110: a 401 names the scheme the client should use.
+    headers = {"WWW-Authenticate": "Bearer"} if isinstance(exc, NotAuthenticatedError) else None
+    return error_response(
+        SERVICE_ERROR_STATUS.get(type(exc), 500), exc.code, exc.message, headers=headers, **extra
+    )
 
 
 async def _account_validation_error(request: Request, exc: AccountValidationError) -> JSONResponse:
