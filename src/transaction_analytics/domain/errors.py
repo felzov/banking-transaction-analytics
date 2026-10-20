@@ -56,6 +56,13 @@ class TokenErrorCode(StrEnum):
     LIFETIME_OUT_OF_RANGE = "lifetime_out_of_range"
 
 
+class AnalyticsErrorCode(StrEnum):
+    """Why a transaction listing or summary query is invalid."""
+
+    INVALID_DATE_RANGE = "invalid_date_range"
+    INVALID_CURSOR = "invalid_cursor"
+
+
 class CodedValidationError[C: StrEnum](ValueError):
     """Input failed validation. Carries a stable code and fixed text, never the raw value.
 
@@ -82,6 +89,10 @@ class LabelValidationError(CodedValidationError[LabelErrorCode]):
 
 class TokenValidationError(CodedValidationError[TokenErrorCode]):
     """An API token request failed validation."""
+
+
+class AnalyticsValidationError(CodedValidationError[AnalyticsErrorCode]):
+    """A transaction listing or summary query failed validation."""
 
 
 class FileRejectedError(Exception):

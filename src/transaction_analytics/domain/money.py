@@ -76,3 +76,18 @@ def parse_amount_minor(raw: str, currency: Currency) -> int:
             FieldErrorCode.AMOUNT_OUT_OF_RANGE, "Amount is outside the supported range."
         )
     return minor
+
+
+def format_minor(minor: int, currency: Currency) -> str:
+    """Minor units as a plain decimal string (-1230 GBP -> "-12.30"), the inverse of
+    parse_amount_minor.
+
+    Exact digit manipulation, no float and no rounding. Any int is accepted, not only the BIGINT
+    range: sums of stored amounts can exceed it (ADR 0008).
+    """
+    exponent = MINOR_UNIT_EXPONENTS[currency]
+    sign = "-" if minor < 0 else ""
+    digits = str(abs(minor)).rjust(exponent + 1, "0")
+    if exponent == 0:
+        return sign + digits
+    return f"{sign}{digits[:-exponent]}.{digits[-exponent:]}"

@@ -8,16 +8,23 @@ from transaction_analytics.domain.errors import FieldErrorCode, FieldValidationE
 
 MAX_DESCRIPTION_LENGTH = 500
 
-# Strict ISO date. date.fromisoformat alone also accepts "20261015" and "2026-W42-4".
-_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+# Strict ISO date. date.fromisoformat alone also accepts "20261015" and "2026-W42-4". [0-9], not
+# \d: in a str pattern \d matches every Unicode digit (Arabic-Indic, full-width, ...).
+_DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _WHITESPACE = re.compile(r"\s+")
+
+
+def is_iso_date_text(text: str) -> bool:
+    """YYYY-MM-DD in ASCII digits: the one date format (statements, ADR 0002; queries, ADR 0008).
+    Says nothing about whether it is a real calendar date."""
+    return _DATE_PATTERN.fullmatch(text) is not None
 
 
 def parse_booking_date(raw: str) -> date:
     text = raw.strip()
     if not text:
         raise FieldValidationError(FieldErrorCode.MISSING_VALUE, "Date is required.")
-    if _DATE_PATTERN.fullmatch(text) is None:
+    if not is_iso_date_text(text):
         raise FieldValidationError(
             FieldErrorCode.INVALID_DATE, "Date must be in YYYY-MM-DD format."
         )

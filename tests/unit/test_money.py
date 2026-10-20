@@ -1,9 +1,12 @@
+import random
+
 import pytest
 
 from transaction_analytics.domain.errors import FieldErrorCode, FieldValidationError
 from transaction_analytics.domain.money import (
     MAX_ABS_AMOUNT_MINOR,
     Currency,
+    format_minor,
     parse_amount_minor,
     parse_currency,
 )
@@ -94,3 +97,37 @@ def test_parse_currency_errors(raw: str, code: FieldErrorCode) -> None:
     with pytest.raises(FieldValidationError) as exc:
         parse_currency(raw)
     assert exc.value.code is code
+
+
+@pytest.mark.parametrize(
+    ("minor", "currency", "expected"),
+    [
+        (-1230, Currency.GBP, "-12.30"),
+        (1230, Currency.GBP, "12.30"),
+        (5, Currency.GBP, "0.05"),
+        (-5, Currency.GBP, "-0.05"),
+        (50, Currency.EUR, "0.50"),
+        (0, Currency.USD, "0.00"),
+        (1500, Currency.JPY, "1500"),
+        (-1500, Currency.JPY, "-1500"),
+        (0, Currency.JPY, "0"),
+        (MAX_ABS_AMOUNT_MINOR, Currency.GBP, "92233720368547758.07"),
+        (-MAX_ABS_AMOUNT_MINOR, Currency.GBP, "-92233720368547758.07"),
+        # Sums can exceed BIGINT (two maximal amounts); formatting stays exact.
+        (2 * MAX_ABS_AMOUNT_MINOR, Currency.USD, "184467440737095516.14"),
+        (-2 * MAX_ABS_AMOUNT_MINOR, Currency.JPY, "-18446744073709551614"),
+    ],
+)
+def test_format_minor(minor: int, currency: Currency, expected: str) -> None:
+    assert format_minor(minor, currency) == expected
+
+
+@pytest.mark.parametrize("currency", list(Currency))
+def test_format_minor_is_the_inverse_of_parse(currency: Currency) -> None:
+    generator = random.Random(20261020)  # fixed seed: a failure is reproducible
+    samples = [0, 1, -1, 9, 10, 99, 100, 101, MAX_ABS_AMOUNT_MINOR, -MAX_ABS_AMOUNT_MINOR]
+    samples += [generator.randint(-MAX_ABS_AMOUNT_MINOR, MAX_ABS_AMOUNT_MINOR) for _ in range(500)]
+    samples += [generator.randint(-10_000, 10_000) for _ in range(500)]
+
+    for minor in samples:
+        assert parse_amount_minor(format_minor(minor, currency), currency) == minor, minor
