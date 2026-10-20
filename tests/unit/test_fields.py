@@ -25,6 +25,23 @@ def test_invalid_dates_are_rejected(raw: str) -> None:
     assert exc.value.code is FieldErrorCode.INVALID_DATE
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "\u0662\u0660\u0662\u0666-\u0661\u0660-\u0661\u0665",  # Arabic-Indic digits
+        "\uff12\uff10\uff12\uff16-\uff11\uff10-\uff11\uff15",  # full-width digits
+        "\u0968\u0966\u0968\u096c-\u0967\u0966-\u0967\u096b",  # Devanagari digits
+    ],
+)
+def test_non_ascii_digits_are_a_format_error(raw: str) -> None:
+    # Review fix: \d matches every Unicode digit, so these passed the format check and were
+    # reported as "not a real calendar date" by date.fromisoformat instead.
+    with pytest.raises(FieldValidationError) as exc:
+        parse_booking_date(raw)
+    assert exc.value.code is FieldErrorCode.INVALID_DATE
+    assert exc.value.message == "Date must be in YYYY-MM-DD format."
+
+
 def test_missing_date() -> None:
     with pytest.raises(FieldValidationError) as exc:
         parse_booking_date("")

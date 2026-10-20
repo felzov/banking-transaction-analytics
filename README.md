@@ -4,7 +4,7 @@
 
 Import, validate, normalize, deduplicate and analyze bank-statement transactions.
 
-**Status: early development (Phase 5 of 8).** What exists today:
+**Status: early development (Phase 6 of 8).** What exists today:
 
 - `/health` liveness endpoint (FastAPI).
 - A pure, fully unit-tested domain layer: a CSV statement parser that returns valid transactions
@@ -21,8 +21,11 @@ Import, validate, normalize, deduplicate and analyze bank-statement transactions
 - Authentication with personal API tokens (`Authorization: Bearer ...`), issued and revoked with an
   operator CLI. Every owner is a user; another user's data is invisible
   ([ADR 0007](docs/adr/0007-authentication.md)).
+- Reading an account back: its transactions (newest first, paged), and inflow, outflow and net
+  per currency, overall or per month ([ADR 0008](docs/adr/0008-analytics.md)).
 
-Not built yet: analytics, listing transactions, self-service sign-up or password login.
+Not built yet: totals across accounts, categories or merchant grouping, export, self-service
+sign-up or password login.
 The target users (accountants, bookkeepers, freelancers, small businesses) are hypotheses that
 have **not** been validated.
 
@@ -102,6 +105,21 @@ curl -s -X POST localhost:8000/accounts/<account_id>/imports -H "$AUTH" \
 
 curl -s localhost:8000/imports/<import_id> -H "$AUTH"
 curl -s 'localhost:8000/imports/<import_id>/errors?limit=100' -H "$AUTH"   # page with after_row=
+
+# Transactions, newest first; pass next_cursor back as cursor= for the next page
+curl -s 'localhost:8000/accounts/<account_id>/transactions?from=2026-09-01&to=2026-09-30&limit=100' \
+  -H "$AUTH"
+# -> {"items": [{"id": "...", "import_id": "...", "booked_on": "2026-09-07", "description": "Refund",
+#                "currency": "GBP", "amount_minor": 1500, "amount": "15.00"}, ...],
+#     "next_cursor": null}
+
+# Totals per currency (from/to optional, both inclusive); /summary/monthly adds "month": "2026-09"
+curl -s 'localhost:8000/accounts/<account_id>/summary?from=2026-09-01&to=2026-09-30' -H "$AUTH"
+# -> {"account_id": "...", "from": "2026-09-01", "to": "2026-09-30",
+#     "totals": [{"currency": "GBP", "transactions": 2,
+#                 "inflow_minor": 1500, "inflow": "15.00",
+#                 "outflow_minor": -95000, "outflow": "-950.00",
+#                 "net_minor": -93500, "net": "-935.00"}]}
 ```
 
 Interactive docs: http://127.0.0.1:8000/docs.
@@ -114,6 +132,8 @@ Interactive docs: http://127.0.0.1:8000/docs.
 | `POST /accounts/{id}/imports` | 201 (also when the file is rejected: `status: "failed"`); 200 when the same file was already rejected with the same error | 401, 404, 409 duplicate, 413, 415, 500 |
 | `GET /imports/{id}` | 200 | 401, 404 |
 | `GET /imports/{id}/errors?after_row=&limit=` | 200 | 401, 404, 422 |
+| `GET /accounts/{id}/transactions?from=&to=&limit=&cursor=` | 200 | 401, 404, 422 |
+| `GET /accounts/{id}/summary?from=&to=`, `GET /accounts/{id}/summary/monthly?from=&to=` | 200 | 401, 404, 422 |
 | `GET /health` | 200 | — (no token needed) |
 
 An upload without a valid token gets 401 before its body is read. A JSON body over 64 KiB gets 413
@@ -133,6 +153,23 @@ before authentication (the size limit sits in front of the app).
   the file. Another owner's account or import is 404.
 - There is no TLS and no rate limiting yet (Phase 8): keep the server on localhost or behind a proxy
   that provides both.
+
+### Amounts, totals and paging (ADR 0008)
+
+- Every amount comes twice: `<name>_minor`, a JSON integer in the currency's minor unit (pence,
+  cents; yen have none), and `<name>`, the same value as an exact decimal string. Use the string
+  if your JSON parser turns large integers into floats (JavaScript does above 2^53). Negative =
+  money out.
+- Totals are per currency and never added across currencies: `inflow` sums the positive amounts,
+  `outflow` the negative ones (it stays negative), `net = inflow + outflow`. A zero amount is
+  counted in `transactions` only. No transactions in the range means `"totals": []`, not zeros.
+- `from` and `to` are `YYYY-MM-DD`, both inclusive, both optional; `from` after `to` is 422
+  `invalid_date_range`. `/summary/monthly` leaves out months without transactions.
+- Listing pages hold up to `limit` (1–500, default 100) transactions; `next_cursor` is `null` on
+  the last page. A cursor is opaque; a changed one is 422 `invalid_cursor`. Transactions of one day
+  are in a stable but arbitrary order.
+- Everything is per account; there are no totals across an owner's accounts (transfers between
+  them would count twice).
 
 ## Tests
 
@@ -199,7 +236,7 @@ Codes are defined in `src/transaction_analytics/domain/errors.py`.
 ```text
 src/transaction_analytics/
   domain/      pure logic (no I/O): money, field rules, CSV parser, dedup keys, names, API token
-               format, import outcome
+               format, import outcome, analytics values (date range, cursor, totals)
   data/        SQLAlchemy models, engine/session factories, owner-scoped queries, DB error helpers
   services/    use cases and transaction boundaries (accounts, imports, users and tokens)
   api/         FastAPI routers (thin), dependencies (incl. authentication), schemas, error handling
@@ -239,6 +276,11 @@ docs/adr/      architecture decision records
   never logs or returns raw database exceptions (ADR 0003).
 - Exporting descriptions back to CSV/Excel would need protection against formula injection
   (`=`, `+`, `-`, `@` prefixes). Not handled because there is no export yet.
+- Totals inherit deduplication's limits (ADR 0006): a corrected valid row that stayed twice counts
+  twice.
+- Summaries of a whole account read every row of it: ~25 ms for 50 000 rows locally (ADR 0008).
+- Server access logs contain query strings: date ranges and cursors (a booking date and a
+  transaction id), never amounts or descriptions.
 
 ## Decisions
 
@@ -249,3 +291,4 @@ docs/adr/      architecture decision records
 - [ADR 0005 — API conventions: error envelope, no echoed values, placeholder owner](docs/adr/0005-api-conventions.md)
 - [ADR 0006 — Deduplication: exact keys, multiset union, enforced by a unique constraint](docs/adr/0006-deduplication.md)
 - [ADR 0007 — Authentication: opaque API tokens, stored hashed, issued by a CLI](docs/adr/0007-authentication.md)
+- [ADR 0008 — Analytics: per-account, per-currency SQL totals; money in API responses](docs/adr/0008-analytics.md)

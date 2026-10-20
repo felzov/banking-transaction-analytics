@@ -206,6 +206,9 @@ class Transaction(Base):
         UniqueConstraint(
             "owner_id", "account_id", "fingerprint", "occurrence", name=DEDUP_CONSTRAINT
         ),
+        # Listing and analytics: one account, a booking-date range, pages by (booked_on, id)
+        # (data/transactions.py, ADR 0008).
+        Index(None, "owner_id", "account_id", "booked_on", "id"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
