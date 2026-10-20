@@ -77,6 +77,9 @@ def test_every_route_is_in_the_schema(app: FastAPI) -> None:
     assert sorted(_operations(app)) == [
         ("GET", "/accounts"),
         ("GET", "/accounts/{account_id}"),
+        ("GET", "/accounts/{account_id}/summary"),
+        ("GET", "/accounts/{account_id}/summary/monthly"),
+        ("GET", "/accounts/{account_id}/transactions"),
         ("GET", "/health"),
         ("GET", "/imports/{import_id}"),
         ("GET", "/imports/{import_id}/errors"),
