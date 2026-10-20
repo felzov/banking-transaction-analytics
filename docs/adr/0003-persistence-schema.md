@@ -1,7 +1,8 @@
 # ADR 0003 — Persistence: ownership in the schema, CHECK over ENUM, isolated test databases
 
 - Status: Accepted; the file-hash uniqueness rule is superseded by ADR 0004 (migration 0002);
-  item 1 amended by ADR 0007 (owner_id references users, migration 0004)
+  item 1 amended by ADR 0007 (owner_id references users, migration 0004); item 7 extended by
+  ADR 0008 (migration 0005)
 - Date: 2026-10-16
 
 ## Context
@@ -54,6 +55,9 @@ deduplication in Phase 4, a second transaction source (ledger) in Phase 7.
    which nothing does. Dedup (Phase 4) and analytics (Phase 6) add indexes for their real queries.
    → Phase 4 added `uq_transactions_dedup (owner_id, account_id, fingerprint, occurrence)`
    (ADR 0006).
+   → Phase 6 added `ix_transactions_owner_id_account_id_booked_on_id` for listing and date ranges
+   (ADR 0008). The child side of `transactions → accounts` has been covered since Phase 4 by the
+   `(owner_id, account_id)` prefix of `uq_transactions_dedup`; the new index is not needed for it.
 8. **Constraint names are deterministic** (naming convention in `data/models.py`, `op.f()` in
    migrations). Tests assert which constraint fired; Phase 3 maps violations to safe messages by
    `constraint_name`.
