@@ -77,6 +77,20 @@ def test_tokens_are_indexed_by_owner_in_listing_order() -> None:
     assert not index.unique
 
 
+def test_transactions_are_indexed_by_account_in_listing_order() -> None:
+    # Listing pages by (booked_on, id) within one account; analytics filter on booked_on.
+    (index,) = Base.metadata.tables["transactions"].indexes
+
+    assert index.name == "ix_transactions_owner_id_account_id_booked_on_id"
+    assert [column.name for column in index.columns] == [
+        "owner_id",
+        "account_id",
+        "booked_on",
+        "id",
+    ]
+    assert not index.unique
+
+
 def test_dedup_constraint_is_owner_scoped_per_occurrence() -> None:
     table = Base.metadata.tables["transactions"]
     (constraint,) = [c for c in table.constraints if c.name == DEDUP_CONSTRAINT]

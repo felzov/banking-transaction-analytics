@@ -298,3 +298,26 @@ def test_downgrade_of_0004_restores_the_0003_schema(
         empty_database_url, lambda c: c.scalar(text("SELECT count(*) FROM transactions"))
     )
     assert stored == len(LEGACY_ROWS)
+
+
+def _transaction_indexes(connection: Connection) -> set[str]:
+    return {ix["name"] for ix in inspect(connection).get_indexes("transactions")}
+
+
+def test_downgrade_of_0005_drops_only_the_booked_on_index(
+    empty_database_url: URL, migration_config: Config
+) -> None:
+    command.upgrade(migration_config, "0002")
+    _run_sync(empty_database_url, _insert_legacy_rows)
+    command.upgrade(migration_config, "head")
+    index = "ix_transactions_owner_id_account_id_booked_on_id"
+    assert index in _run_sync(empty_database_url, _transaction_indexes)
+
+    command.downgrade(migration_config, "0004")
+
+    assert index not in _run_sync(empty_database_url, _transaction_indexes)
+    assert _tables(empty_database_url) == APP_TABLES | {"alembic_version"}
+    stored = _run_sync(
+        empty_database_url, lambda c: c.scalar(text("SELECT count(*) FROM transactions"))
+    )
+    assert stored == len(LEGACY_ROWS)
