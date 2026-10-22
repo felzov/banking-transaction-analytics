@@ -75,3 +75,66 @@ def test_import_limits_must_be_positive_integers(
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_ledger_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.delenv("LEDGER_API_URL", raising=False)
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.ledger_api_url is None
+    assert settings.ledger_sync_max_entries == DEFAULT_MAX_ROWS
+
+
+def test_ledger_url_is_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("LEDGER_API_URL", "https://ledger.internal:8443/api")
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert str(settings.ledger_api_url) == "https://ledger.internal:8443/api"
+
+
+@pytest.mark.parametrize(
+    "value", ["ledger.internal", "file:///etc/passwd", "ftp://ledger.internal", "http://"]
+)
+def test_ledger_url_must_be_http(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    # The only place a ledger call's destination comes from (ADR 0009).
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("LEDGER_API_URL", value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["LEDGER_TIMEOUT_SECONDS", "LEDGER_SYNC_TIMEOUT_SECONDS", "LEDGER_SYNC_MAX_ENTRIES"],
+)
+def test_ledger_limits_must_be_positive(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv(name, "0")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://svc:S3CRET-LEDGER@ledger:8001",
+        "http://svc@ledger:8001",
+        "http://:S3CRET-LEDGER@ledger",
+    ],
+)
+def test_ledger_url_must_not_carry_credentials(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    # Review fix: httpx2 turns userinfo into Basic auth, which replaces the ledger token's Bearer
+    # header on every call. The error must not print the password either.
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("LEDGER_API_URL", value)
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert "S3CRET-LEDGER" not in str(exc.value)

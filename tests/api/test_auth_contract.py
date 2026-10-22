@@ -83,9 +83,11 @@ def test_every_route_is_in_the_schema(app: FastAPI) -> None:
         ("GET", "/health"),
         ("GET", "/imports/{import_id}"),
         ("GET", "/imports/{import_id}/errors"),
+        ("GET", "/ledger-syncs/{sync_id}"),
         ("GET", "/me"),
         ("POST", "/accounts"),
         ("POST", "/accounts/{account_id}/imports"),
+        ("POST", "/accounts/{account_id}/ledger-syncs"),
     ]
 
 
