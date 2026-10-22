@@ -1,6 +1,6 @@
 """Statement import (ADR 0004).
 
-1. The account must belong to the owner.
+1. The account must belong to the owner and take its transactions from CSV files (ADR 0009).
 2. The file is hashed and parsed before anything is written, in a worker thread (CPU-bound work
    would block the event loop) and with no transaction open (no pooled connection is held).
 3. One transaction inserts the job in its final state (except duplicate_rows, item 6), then its
@@ -41,8 +41,10 @@ from transaction_analytics.domain.imports import (
     internal_error_outcome,
     rejected_outcome,
 )
+from transaction_analytics.domain.ledger import AccountSource
 from transaction_analytics.services.errors import (
     AccountNotFoundError,
+    AccountSourceMismatchError,
     DuplicateImportError,
     ImportNotFoundError,
     ImportProcessingError,
@@ -106,10 +108,15 @@ async def import_statement(
     Owns the transaction boundaries: it rolls back after the account check and commits the
     import, so it must get a session with no pending work of the caller's.
 
-    Raises AccountNotFoundError, DuplicateImportError or ImportProcessingError.
+    Raises AccountNotFoundError, AccountSourceMismatchError, DuplicateImportError or
+    ImportProcessingError.
     """
-    if await accounts_data.get_account(session, owner_id=owner_id, account_id=account_id) is None:
+    account = await accounts_data.get_account(session, owner_id=owner_id, account_id=account_id)
+    if account is None:
         raise AccountNotFoundError
+    if account.source != AccountSource.CSV:
+        # A ledger account's transactions come from its ledger only (ADR 0009).
+        raise AccountSourceMismatchError
     # End the read transaction so its connection goes back to the pool during the CPU-bound
     # parse instead of sitting "idle in transaction". The write transaction starts at the INSERT.
     await session.rollback()

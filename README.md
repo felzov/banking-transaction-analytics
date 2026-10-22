@@ -4,7 +4,7 @@
 
 Import, validate, normalize, deduplicate and analyze bank-statement transactions.
 
-**Status: early development (Phase 6 of 8).** What exists today:
+**Status: early development (Phase 7 of 8).** What exists today:
 
 - `/health` liveness endpoint (FastAPI).
 - A pure, fully unit-tested domain layer: a CSV statement parser that returns valid transactions
@@ -23,6 +23,9 @@ Import, validate, normalize, deduplicate and analyze bank-statement transactions
   ([ADR 0007](docs/adr/0007-authentication.md)).
 - Reading an account back: its transactions (newest first, paged), and inflow, outflow and net
   per currency, overall or per month ([ADR 0008](docs/adr/0008-analytics.md)).
+- A second source: accounts linked to a [banking-ledger-api](https://github.com/felzov/banking-ledger-api)
+  account, synced on request with the caller's ledger token (never stored), checked entry by entry
+  and deduplicated by the ledger's entry id ([ADR 0009](docs/adr/0009-ledger-source.md)).
 
 Not built yet: totals across accounts, categories or merchant grouping, export, self-service
 sign-up or password login.
@@ -95,7 +98,8 @@ curl -s localhost:8000/me -H "$AUTH"
 # Create an account
 curl -s -X POST localhost:8000/accounts -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name": "Current account"}'
-# -> {"id": "<account_id>", "name": "Current account", "created_at": "..."}
+# -> {"id": "<account_id>", "name": "Current account", "source": "csv", "ledger": null,
+#     "created_at": "..."}
 
 # Upload a statement: the raw file as the body, Content-Type text/csv (not multipart)
 curl -s -X POST localhost:8000/accounts/<account_id>/imports -H "$AUTH" \
@@ -109,7 +113,8 @@ curl -s 'localhost:8000/imports/<import_id>/errors?limit=100' -H "$AUTH"   # pag
 # Transactions, newest first; pass next_cursor back as cursor= for the next page
 curl -s 'localhost:8000/accounts/<account_id>/transactions?from=2026-09-01&to=2026-09-30&limit=100' \
   -H "$AUTH"
-# -> {"items": [{"id": "...", "import_id": "...", "booked_on": "2026-09-07", "description": "Refund",
+# -> {"items": [{"id": "...", "source": "csv", "import_id": "...", "ledger_entry_id": null,
+#                "booked_on": "2026-09-07", "description": "Refund",
 #                "currency": "GBP", "amount_minor": 1500, "amount": "15.00"}, ...],
 #     "next_cursor": null}
 
@@ -127,9 +132,11 @@ Interactive docs: http://127.0.0.1:8000/docs.
 | Endpoint | Success | Errors |
 |---|---|---|
 | `GET /me` | 200 | 401 |
-| `POST /accounts` | 201 | 401, 413 (body over 64 KiB), 422 |
+| `POST /accounts` | 201 | 401, 409 ledger account already linked, 413 (body over 64 KiB), 422 |
 | `GET /accounts`, `GET /accounts/{id}` | 200 | 401, 404 |
-| `POST /accounts/{id}/imports` | 201 (also when the file is rejected: `status: "failed"`); 200 when the same file was already rejected with the same error | 401, 404, 409 duplicate, 413, 415, 500 |
+| `POST /accounts/{id}/imports` | 201 (also when the file is rejected: `status: "failed"`); 200 when the same file was already rejected with the same error | 401, 404, 409 duplicate or ledger account, 413, 415, 500 |
+| `POST /accounts/{id}/ledger-syncs` | 201 with new entries; 204 when there were none | 401, 404, 409 CSV account, 422, 502, 503 (see [Ledger accounts](#ledger-accounts-adr-0009)) |
+| `GET /ledger-syncs/{id}` | 200 | 401, 404 |
 | `GET /imports/{id}` | 200 | 401, 404 |
 | `GET /imports/{id}/errors?after_row=&limit=` | 200 | 401, 404, 422 |
 | `GET /accounts/{id}/transactions?from=&to=&limit=&cursor=` | 200 | 401, 404, 422 |
@@ -170,6 +177,61 @@ before authentication (the size limit sits in front of the app).
   are in a stable but arbitrary order.
 - Everything is per account; there are no totals across an owner's accounts (transfers between
   them would count twice).
+
+### Ledger accounts (ADR 0009)
+
+An account takes its transactions either from CSV uploads or from one
+[banking-ledger-api](https://github.com/felzov/banking-ledger-api) account, chosen when it is created.
+The server needs `LEDGER_API_URL` (e.g. `http://127.0.0.1:8001`; unset = syncs answer 503).
+
+```bash
+# Link: the ledger's own user id and account id
+curl -s -X POST localhost:8000/accounts -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name": "Ledger GBP", "ledger": {"user_id": "<ledger_user_id>", "account_id": "<ledger_account_id>"}}'
+# -> {"id": "<account_id>", "source": "ledger", "ledger": {"user_id": "...", "account_id": "..."}, ...}
+
+# Sync: log in to the ledger (POST /sessions there) and pass its 30-minute token
+curl -si -X POST localhost:8000/accounts/<account_id>/ledger-syncs -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"ledger_token": "lt_..."}'
+# -> 201, Location: http://localhost:8000/ledger-syncs/<sync_id>
+#    {"id": "<sync_id>", "account_id": "...", "fetched_entries": 5, "duplicate_entries": 0,
+#     "imported_entries": 5, "created_at": "..."}
+# The same again with nothing new in the ledger -> 204, no body, nothing recorded
+```
+
+- The ledger token is used for that sync only: never stored, logged or returned.
+- Each ledger entry becomes one transaction: booked on the **UTC date** of its posting time,
+  described as `Ledger deposit`, `Ledger withdrawal`, `Ledger transfer in` or `out`, in the ledger
+  account's currency, with its `ledger_entry_id`. Totals of a ledger account equal its ledger
+  balance.
+- Re-syncing is safe: entries are matched by the ledger's entry id. A sync reads newest first and
+  stops at the first page with an entry the account already has, so a sync without news reads one
+  page and answers 204 without recording a sync. When there is news, `duplicate_entries` counts
+  the stored entries it read again.
+- Only the ledger's currencies (GBP, EUR) are accepted, because ledger amounts are taken over in
+  their minor units as they are; a posting time whose UTC date falls outside years 1–9999 is an
+  invalid response.
+- Nothing is stored unless the whole statement checks out: shapes, signs, and the running balance
+  from entry to entry (a history read to its start must begin at zero).
+- A ledger account takes no CSV uploads and a CSV account no syncs (409 `account_source_mismatch`).
+  One owner can link a ledger account once (409 `ledger_account_already_linked`).
+
+| Sync error | Status | When |
+|---|---|---|
+| `invalid_ledger_token` | 422 | Not a ledger token (`lt_` + 43 characters); checked before anything else |
+| `ledger_token_rejected` | 422 | The ledger answered 401: log in to the ledger again |
+| `ledger_account_unavailable` | 422 | The ledger answered 403/404: the link names another ledger user, or a missing account |
+| `ledger_too_many_entries` | 422 | The sync would read more than `LEDGER_SYNC_MAX_ENTRIES` entries (the new ones, plus the stored ones on its last page) |
+| `ledger_unavailable` | 502 | Unreachable, timed out, 429 or 5xx |
+| `ledger_invalid_response` | 502 | Malformed or inconsistent statement; nothing stored |
+| `ledger_not_configured` | 503 | `LEDGER_API_URL` is not set |
+
+| Setting | Default | |
+|---|---|---|
+| `LEDGER_API_URL` | unset | Base URL of banking-ledger-api, http(s), no `user:password@`. The only place a ledger call's destination comes from |
+| `LEDGER_TIMEOUT_SECONDS` | 10 | Per ledger call |
+| `LEDGER_SYNC_TIMEOUT_SECONDS` | 120 | One deadline for all ledger calls of a sync |
+| `LEDGER_SYNC_MAX_ENTRIES` | 50000 | Entries one sync may read |
 
 ## Tests
 
@@ -236,9 +298,11 @@ Codes are defined in `src/transaction_analytics/domain/errors.py`.
 ```text
 src/transaction_analytics/
   domain/      pure logic (no I/O): money, field rules, CSV parser, dedup keys, names, API token
-               format, import outcome, analytics values (date range, cursor, totals)
+               format, import outcome, analytics values (date range, cursor, totals), ledger
+               entries and statement checks
   data/        SQLAlchemy models, engine/session factories, owner-scoped queries, DB error helpers
-  services/    use cases and transaction boundaries (accounts, imports, users and tokens)
+  integrations/ HTTP client for banking-ledger-api (outbound I/O, no business rules)
+  services/    use cases and transaction boundaries (accounts, imports, ledger syncs, users, tokens)
   api/         FastAPI routers (thin), dependencies (incl. authentication), schemas, error handling
   cli.py       operator commands for users and API tokens (thin, like api/)
   settings.py  configuration from environment / .env
@@ -281,6 +345,10 @@ docs/adr/      architecture decision records
 - Summaries of a whole account read every row of it: ~25 ms for 50 000 rows locally (ADR 0008).
 - Server access logs contain query strings: date ranges and cursors (a booking date and a
   transaction id), never amounts or descriptions.
+- Ledger syncs are synchronous and read at most `LEDGER_SYNC_MAX_ENTRIES` entries; a longer
+  history cannot be synced the first time (all or nothing, newest first). Failed syncs, and syncs
+  that found nothing new, are not recorded. Ledger entries are booked on their UTC date
+  (ADR 0009).
 
 ## Decisions
 
@@ -292,3 +360,4 @@ docs/adr/      architecture decision records
 - [ADR 0006 — Deduplication: exact keys, multiset union, enforced by a unique constraint](docs/adr/0006-deduplication.md)
 - [ADR 0007 — Authentication: opaque API tokens, stored hashed, issued by a CLI](docs/adr/0007-authentication.md)
 - [ADR 0008 — Analytics: per-account, per-currency SQL totals; money in API responses](docs/adr/0008-analytics.md)
+- [ADR 0009 — Ledger source: accounts fed by banking-ledger-api, pulled per request](docs/adr/0009-ledger-source.md)

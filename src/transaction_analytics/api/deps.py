@@ -13,8 +13,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from transaction_analytics.data.models import User
+from transaction_analytics.integrations.ledger import LedgerConfig
 from transaction_analytics.services import auth as auth_service
 from transaction_analytics.services.imports import ImportLimits
+from transaction_analytics.services.ledger_sync import LedgerSettings
 from transaction_analytics.settings import Settings, get_settings
 
 
@@ -66,3 +68,19 @@ async def get_import_limits(settings: SettingsDep) -> ImportLimits:
 
 OwnerIdDep = Annotated[uuid.UUID, Depends(get_owner_id)]
 ImportLimitsDep = Annotated[ImportLimits, Depends(get_import_limits)]
+
+
+async def get_ledger_settings(settings: SettingsDep) -> LedgerSettings | None:
+    """None when LEDGER_API_URL is unset: ledger syncs then answer 503 (ADR 0009)."""
+    if settings.ledger_api_url is None:
+        return None
+    return LedgerSettings(
+        client=LedgerConfig(
+            base_url=str(settings.ledger_api_url), timeout_seconds=settings.ledger_timeout_seconds
+        ),
+        sync_timeout_seconds=settings.ledger_sync_timeout_seconds,
+        max_entries=settings.ledger_sync_max_entries,
+    )
+
+
+LedgerSettingsDep = Annotated[LedgerSettings | None, Depends(get_ledger_settings)]

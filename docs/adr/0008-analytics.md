@@ -1,6 +1,6 @@
 # ADR 0008 — Analytics: per-account, per-currency SQL totals; money in API responses
 
-- Status: Accepted
+- Status: Accepted; item 9 settled by ADR 0009 (ledger rows count; an account has one source)
 - Date: 2026-10-20
 
 ## Context
@@ -54,6 +54,7 @@ and negatives (ADR 0006). One account can hold hundreds of thousands of rows.
    `CONCURRENTLY`, so it blocks writes to `transactions` while it builds; fine at this stage.
 9. **Reads ignore import jobs.** The queries read `transactions` only, so transactions from another
    source (Phase 7) will be included without a change; whether they should be is Phase 7's call.
+   → ADR 0009: they are; an account has one source, so nothing is counted twice.
 10. **Ownership as everywhere**: the service validates the query, checks the account belongs to the
     owner (404 `account_not_found` otherwise, also for an account that does not exist), then runs
     one query that filters by owner *and* account.

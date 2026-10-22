@@ -63,6 +63,12 @@ class AnalyticsErrorCode(StrEnum):
     INVALID_CURSOR = "invalid_cursor"
 
 
+class LedgerErrorCode(StrEnum):
+    """Why a ledger link or sync request is invalid."""
+
+    INVALID_LEDGER_TOKEN = "invalid_ledger_token"
+
+
 class CodedValidationError[C: StrEnum](ValueError):
     """Input failed validation. Carries a stable code and fixed text, never the raw value.
 
@@ -93,6 +99,10 @@ class TokenValidationError(CodedValidationError[TokenErrorCode]):
 
 class AnalyticsValidationError(CodedValidationError[AnalyticsErrorCode]):
     """A transaction listing or summary query failed validation."""
+
+
+class LedgerValidationError(CodedValidationError[LedgerErrorCode]):
+    """A ledger link or sync request failed validation."""
 
 
 class FileRejectedError(Exception):

@@ -4,38 +4,75 @@ import uuid
 from datetime import date, datetime
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from transaction_analytics.data.models import (
     Account,
     ImportJob,
     ImportRowError,
+    LedgerSync,
     Transaction,
     User,
 )
 from transaction_analytics.domain.analytics import CurrencyTotals, MonthTotals
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
+from transaction_analytics.domain.ledger import AccountSource, LedgerLink
 from transaction_analytics.domain.money import Currency, format_minor
 
 # Bounds the request before normalization; the real rule (100 characters) is in the domain.
 MAX_ACCOUNT_NAME_INPUT_LENGTH = 1000
+# Bounds the ledger token before its shape is checked (domain/ledger.py: 46 characters).
+MAX_LEDGER_TOKEN_INPUT_LENGTH = 200
+
+
+class LedgerLinkIn(BaseModel):
+    """The banking-ledger-api user and account (both ids from the ledger) to read from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: uuid.UUID
+    account_id: uuid.UUID
+
+    def to_domain(self) -> LedgerLink:
+        return LedgerLink(user_id=self.user_id, account_id=self.account_id)
 
 
 class AccountCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(max_length=MAX_ACCOUNT_NAME_INPUT_LENGTH)
+    # Given: a ledger account, fed only by ledger syncs. Left out: a CSV account (ADR 0009).
+    ledger: LedgerLinkIn | None = None
+
+
+class LedgerLinkOut(BaseModel):
+    user_id: uuid.UUID
+    account_id: uuid.UUID
 
 
 class AccountOut(BaseModel):
     id: uuid.UUID
     name: str
+    source: AccountSource
+    # Present exactly for a ledger account.
+    ledger: LedgerLinkOut | None
     created_at: datetime
 
     @classmethod
     def of(cls, account: Account) -> Self:
-        return cls(id=account.id, name=account.name, created_at=account.created_at)
+        ledger = None
+        if account.ledger_user_id is not None and account.ledger_account_id is not None:
+            ledger = LedgerLinkOut(
+                user_id=account.ledger_user_id, account_id=account.ledger_account_id
+            )
+        return cls(
+            id=account.id,
+            name=account.name,
+            source=account.source,
+            ledger=ledger,
+            created_at=account.created_at,
+        )
 
 
 class UserOut(BaseModel):
@@ -118,7 +155,11 @@ class RowErrorPageOut(BaseModel):
 
 class TransactionOut(BaseModel):
     id: uuid.UUID
-    import_id: uuid.UUID
+    source: AccountSource
+    # The import that stored a CSV row; None for a ledger row.
+    import_id: uuid.UUID | None
+    # The ledger's entry id of a ledger row, for reconciling with its statement; None for CSV.
+    ledger_entry_id: uuid.UUID | None
     booked_on: date
     description: str
     currency: Currency
@@ -129,12 +170,44 @@ class TransactionOut(BaseModel):
     def of(cls, transaction: Transaction) -> Self:
         return cls(
             id=transaction.id,
+            source=transaction.source,
             import_id=transaction.import_job_id,
+            ledger_entry_id=transaction.ledger_entry_id,
             booked_on=transaction.booked_on,
             description=transaction.description,
             currency=transaction.currency,
             amount_minor=transaction.amount_minor,
             amount=format_minor(transaction.amount_minor, transaction.currency),
+        )
+
+
+class LedgerSyncCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # A banking-ledger-api access token for the linked ledger user (log in to the ledger first).
+    # Used for this sync only; never stored, logged or returned. SecretStr masks it in reprs.
+    ledger_token: SecretStr = Field(max_length=MAX_LEDGER_TOKEN_INPUT_LENGTH)
+
+
+class LedgerSyncOut(BaseModel):
+    id: uuid.UUID
+    account_id: uuid.UUID
+    # Entries read from the ledger; duplicate_entries of them were already stored, the
+    # imported_entries rest were added.
+    fetched_entries: int
+    duplicate_entries: int
+    imported_entries: int
+    created_at: datetime
+
+    @classmethod
+    def of(cls, sync: LedgerSync) -> Self:
+        return cls(
+            id=sync.id,
+            account_id=sync.account_id,
+            fetched_entries=sync.fetched_entries,
+            duplicate_entries=sync.duplicate_entries,
+            imported_entries=sync.fetched_entries - sync.duplicate_entries,
+            created_at=sync.created_at,
         )
 
 

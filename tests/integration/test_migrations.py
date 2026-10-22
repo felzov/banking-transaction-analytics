@@ -27,7 +27,15 @@ from transaction_analytics.domain.money import Currency
 
 pytestmark = pytest.mark.integration
 
-APP_TABLES = {"accounts", "import_jobs", "transactions", "import_row_errors", "users", "api_tokens"}
+APP_TABLES = {
+    "accounts",
+    "import_jobs",
+    "transactions",
+    "import_row_errors",
+    "users",
+    "api_tokens",
+    "ledger_syncs",
+}
 
 
 def _run_sync[T](url: URL, function: Callable[[Connection], T]) -> T:
@@ -292,7 +300,9 @@ def test_downgrade_of_0004_restores_the_0003_schema(
 
     command.downgrade(migration_config, "0003")
 
-    assert _tables(empty_database_url) == APP_TABLES - {"users", "api_tokens"} | {"alembic_version"}
+    assert _tables(empty_database_url) == APP_TABLES - {"users", "api_tokens", "ledger_syncs"} | {
+        "alembic_version"
+    }
     assert "fk_accounts_owner" not in _run_sync(empty_database_url, _account_owner_fks)
     stored = _run_sync(
         empty_database_url, lambda c: c.scalar(text("SELECT count(*) FROM transactions"))
@@ -316,8 +326,90 @@ def test_downgrade_of_0005_drops_only_the_booked_on_index(
     command.downgrade(migration_config, "0004")
 
     assert index not in _run_sync(empty_database_url, _transaction_indexes)
-    assert _tables(empty_database_url) == APP_TABLES | {"alembic_version"}
+    assert _tables(empty_database_url) == APP_TABLES - {"ledger_syncs"} | {"alembic_version"}
     stored = _run_sync(
         empty_database_url, lambda c: c.scalar(text("SELECT count(*) FROM transactions"))
     )
     assert stored == len(LEGACY_ROWS)
+
+
+def _sources(connection: Connection) -> tuple[set[str], set[str]]:
+    return (
+        set(connection.scalars(text("SELECT DISTINCT source FROM accounts"))),
+        set(connection.scalars(text("SELECT DISTINCT source FROM transactions"))),
+    )
+
+
+def test_existing_accounts_and_transactions_become_csv(
+    empty_database_url: URL, migration_config: Config
+) -> None:
+    command.upgrade(migration_config, "0002")
+    _run_sync(empty_database_url, _insert_legacy_rows)
+
+    command.upgrade(migration_config, "0006")
+
+    assert _run_sync(empty_database_url, _sources) == ({"csv"}, {"csv"})
+
+
+def _ledger_schema(connection: Connection) -> tuple[set[str], set[str], set[str]]:
+    inspector = inspect(connection)
+    return (
+        {column["name"] for column in inspector.get_columns("accounts")},
+        {column["name"] for column in inspector.get_columns("transactions")},
+        {fk["name"] for fk in inspector.get_foreign_keys("transactions")},
+    )
+
+
+def test_downgrade_of_0006_restores_the_0005_schema(
+    empty_database_url: URL, migration_config: Config
+) -> None:
+    command.upgrade(migration_config, "0002")
+    _run_sync(empty_database_url, _insert_legacy_rows)
+    command.upgrade(migration_config, "head")
+    accounts, transactions, fks = _run_sync(empty_database_url, _ledger_schema)
+    assert {"source", "ledger_user_id", "ledger_account_id"} <= accounts
+    assert {"source", "ledger_sync_id", "ledger_entry_id"} <= transactions
+    assert "fk_transactions_account_source" in fks
+    assert "fk_transactions_account" not in fks
+
+    command.downgrade(migration_config, "0005")
+
+    accounts, transactions, fks = _run_sync(empty_database_url, _ledger_schema)
+    assert not {"source", "ledger_user_id", "ledger_account_id"} & accounts
+    assert not {"source", "ledger_sync_id", "ledger_entry_id"} & transactions
+    assert "fk_transactions_account" in fks
+    assert not {"fk_transactions_account_source", "fk_transactions_ledger_sync"} & fks
+    assert _tables(empty_database_url) == APP_TABLES - {"ledger_syncs"} | {"alembic_version"}
+    stored = _run_sync(
+        empty_database_url, lambda c: c.scalar(text("SELECT count(*) FROM transactions"))
+    )
+    assert stored == len(LEGACY_ROWS)
+
+
+def _add_ledger_account(connection: Connection) -> None:
+    owner = connection.scalar(text("INSERT INTO users (name) VALUES ('Ledger owner') RETURNING id"))
+    connection.execute(
+        text(
+            "INSERT INTO accounts (owner_id, name, source, ledger_user_id, ledger_account_id)"
+            " VALUES (:o, 'Ledger', 'ledger', gen_random_uuid(), gen_random_uuid())"
+        ),
+        {"o": owner},
+    )
+    connection.commit()
+
+
+def test_downgrade_of_0006_refuses_while_ledger_accounts_exist(
+    empty_database_url: URL, migration_config: Config
+) -> None:
+    # Their transactions have no import job, and a migration never deletes financial rows.
+    command.upgrade(migration_config, "head")
+    _run_sync(empty_database_url, _add_ledger_account)
+
+    with pytest.raises(Exception, match="ledger accounts exist"):
+        command.downgrade(migration_config, "0005")
+
+    version = _run_sync(
+        empty_database_url, lambda c: c.scalar(text("SELECT version_num FROM alembic_version"))
+    )
+    assert version == "0006"
+    assert "ledger_syncs" in _tables(empty_database_url)

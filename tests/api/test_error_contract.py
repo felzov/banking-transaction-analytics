@@ -32,6 +32,8 @@ from transaction_analytics.domain.errors import (
     CodedValidationError,
     LabelErrorCode,
     LabelValidationError,
+    LedgerErrorCode,
+    LedgerValidationError,
     TokenErrorCode,
     TokenValidationError,
 )
@@ -356,8 +358,9 @@ async def test_request_path_uses_no_threadpool(monkeypatch: pytest.MonkeyPatch) 
         TokenValidationError(
             TokenErrorCode.LIFETIME_OUT_OF_RANGE, "Token lifetime must be between 1 and 365 days."
         ),
+        LedgerValidationError(LedgerErrorCode.INVALID_LEDGER_TOKEN, "Ledger token is invalid."),
     ],
-    ids=["label", "token"],
+    ids=["label", "token", "ledger"],
 )
 def test_every_validation_error_is_a_422_with_its_code(
     app: FastAPI, error: CodedValidationError

@@ -61,7 +61,9 @@ async def test_imported_statement_is_listed_newest_first(client: httpx2.AsyncCli
     first = items[0]
     assert set(first) == {
         "id",
+        "source",
         "import_id",
+        "ledger_entry_id",
         "booked_on",
         "description",
         "currency",
@@ -69,6 +71,7 @@ async def test_imported_statement_is_listed_newest_first(client: httpx2.AsyncCli
         "amount",
     }
     assert first["import_id"] == job["id"]
+    assert (first["source"], first["ledger_entry_id"]) == ("csv", None)
     assert (first["currency"], first["amount_minor"]) == ("EUR", -12050)
     uuid.UUID(first["id"])
 

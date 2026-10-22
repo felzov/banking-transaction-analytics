@@ -13,7 +13,13 @@ router = APIRouter(prefix="/accounts", tags=["accounts"])
 async def create_account(
     body: AccountCreate, session: SessionDep, owner_id: OwnerIdDep
 ) -> AccountOut:
-    account = await account_service.create_account(session, owner_id=owner_id, name=body.name)
+    """A CSV account, or with "ledger" an account fed by that banking-ledger-api account."""
+    account = await account_service.create_account(
+        session,
+        owner_id=owner_id,
+        name=body.name,
+        ledger=None if body.ledger is None else body.ledger.to_domain(),
+    )
     return AccountOut.of(account)
 
 

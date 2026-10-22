@@ -4,6 +4,7 @@ Each violation case breaks exactly one rule and asserts *which* constraint fired
 pass because a different rule happened to reject the row.
 """
 
+import os
 import re
 import uuid
 from collections.abc import Callable
@@ -22,6 +23,9 @@ from factories import (
     completed,
     failed,
     job,
+    ledger_account,
+    ledger_sync,
+    ledger_transaction,
     row_error,
     sha256_hex,
     transaction,
@@ -32,10 +36,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from transaction_analytics.data.errors import constraint_name
-from transaction_analytics.data.models import Account, Base, ImportJob, Transaction, User
+from transaction_analytics.data.models import (
+    Account,
+    Base,
+    ImportJob,
+    LedgerSync,
+    Transaction,
+    User,
+)
 from transaction_analytics.domain.csv_parser import REQUIRED_COLUMNS
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
+from transaction_analytics.domain.ledger import AccountSource
 from transaction_analytics.domain.money import Currency
 
 pytestmark = pytest.mark.integration
@@ -53,20 +65,24 @@ class World:
     other_acc: Account  # another owner's account
     job: ImportJob  # completed job on acc, with a transaction at row 2 and an error at row 3
     tx: Transaction  # the transaction at row 2
+    ledger_acc: Account  # a ledger account of the same owner (ADR 0009)
+    sync: LedgerSync  # a sync of ledger_acc, with one ledger transaction
+    ledger_tx: Transaction
 
 
 @pytest.fixture
 async def world(session: AsyncSession) -> World:
     acc, acc2, other_acc = account(), account(name="Savings"), account(OTHER_OWNER_ID)
-    session.add_all([acc, acc2, other_acc])
+    ledger_acc = ledger_account()
+    session.add_all([acc, acc2, other_acc, ledger_acc])
     await session.flush()
-    import_job = completed(acc, file_sha256=sha256_hex(1))
-    session.add(import_job)
+    import_job, sync = completed(acc, file_sha256=sha256_hex(1)), ledger_sync(ledger_acc)
+    session.add_all([import_job, sync])
     await session.flush()
-    tx = transaction(import_job, row_number=2)
-    session.add_all([tx, row_error(import_job, row_number=3)])
+    tx, ledger_tx = transaction(import_job, row_number=2), ledger_transaction(sync)
+    session.add_all([tx, ledger_tx, row_error(import_job, row_number=3)])
     await session.flush()
-    return World(acc, acc2, other_acc, import_job, tx)
+    return World(acc, acc2, other_acc, import_job, tx, ledger_acc, sync, ledger_tx)
 
 
 Build = Callable[[World], list[Base]]
@@ -306,6 +322,130 @@ VIOLATIONS: list[tuple[str, Build, str]] = [
         lambda w: [row_error(w.job, row_number=3)],
         "uq_import_row_errors_import_job_id_row_number",
     ),
+    # ledger source (ADR 0009): accounts
+    (
+        "account: unknown source",
+        lambda w: [account(source="bank")],
+        "ck_accounts_source_allowed",
+    ),
+    (
+        "account: ledger source without a link",
+        lambda w: [account(source=AccountSource.LEDGER)],
+        "ck_accounts_ledger_link_iff_ledger",
+    ),
+    (
+        "account: link on a CSV account",
+        lambda w: [ledger_account(source=AccountSource.CSV)],
+        "ck_accounts_ledger_link_iff_ledger",
+    ),
+    (
+        "account: half a link",
+        lambda w: [ledger_account(ledger_user_id=None)],
+        "ck_accounts_ledger_link_iff_ledger",
+    ),
+    (
+        "account: same ledger account linked twice by one owner",
+        lambda w: [ledger_account(ledger_account_id=w.ledger_acc.ledger_account_id)],
+        "uq_accounts_owner_id_ledger_account_id",
+    ),
+    # ledger_syncs
+    (
+        "sync: negative duplicates",
+        lambda w: [ledger_sync(w.ledger_acc, duplicate_entries=-1)],
+        "ck_ledger_syncs_duplicate_entries_valid",
+    ),
+    (
+        "sync: more duplicates than fetched",
+        lambda w: [ledger_sync(w.ledger_acc, fetched_entries=2, duplicate_entries=3)],
+        "ck_ledger_syncs_duplicate_entries_valid",
+    ),
+    (
+        "sync: negative fetched (implied by the duplicates rule)",
+        lambda w: [ledger_sync(w.ledger_acc, fetched_entries=-1)],
+        "ck_ledger_syncs_duplicate_entries_valid",
+    ),
+    (
+        "sync: another owner's account",
+        lambda w: [ledger_sync(w.ledger_acc, owner_id=OTHER_OWNER_ID)],
+        "fk_ledger_syncs_account",
+    ),
+    # transactions: one source, its own provenance columns
+    (
+        "transaction: unknown source",
+        lambda w: [transaction(w.job, row_number=9, source="bank")],
+        "ck_transactions_source_allowed",
+    ),
+    (
+        "transaction: CSV row without an import",
+        lambda w: [transaction(w.job, row_number=9, import_job_id=None)],
+        "ck_transactions_source_columns",
+    ),
+    (
+        "transaction: CSV row without a row number",
+        lambda w: [transaction(w.job, row_number=None)],
+        "ck_transactions_source_columns",
+    ),
+    (
+        "transaction: CSV row with a ledger entry",
+        lambda w: [transaction(w.job, row_number=9, ledger_entry_id=uuid.uuid4())],
+        "ck_transactions_source_columns",
+    ),
+    (
+        "transaction: ledger row with an import",
+        lambda w: [ledger_transaction(w.sync, import_job_id=w.job.id, row_number=9)],
+        "ck_transactions_source_columns",
+    ),
+    (
+        "transaction: ledger row without an entry id",
+        lambda w: [ledger_transaction(w.sync, ledger_entry_id=None, fingerprint=os.urandom(32))],
+        "ck_transactions_source_columns",
+    ),
+    (
+        "transaction: ledger fingerprint not from its entry id",
+        lambda w: [ledger_transaction(w.sync, fingerprint=os.urandom(32))],
+        "ck_transactions_ledger_fingerprint",
+    ),
+    (
+        "transaction: ledger row as a second occurrence",
+        lambda w: [ledger_transaction(w.sync, occurrence=2)],
+        "ck_transactions_ledger_fingerprint",
+    ),
+    (
+        "transaction: same ledger entry twice in the account",
+        lambda w: [ledger_transaction(w.sync, ledger_entry_id=w.ledger_tx.ledger_entry_id)],
+        "uq_transactions_dedup",
+    ),
+    (
+        "transaction: CSV row in a ledger account (through an import of that account)",
+        # The schema lets an import job exist on a ledger account (the service refuses the
+        # upload); its rows still cannot be stored there.
+        lambda w: [
+            (ledger_job := completed(w.ledger_acc, file_sha256=sha256_hex(2))),
+            transaction(ledger_job),
+        ],
+        "fk_transactions_account_source",
+    ),
+    (
+        "transaction: ledger row in a CSV account (through a sync of that account)",
+        lambda w: [(csv_sync := ledger_sync(w.acc)), ledger_transaction(csv_sync)],
+        "fk_transactions_account_source",
+    ),
+    (
+        "transaction: ledger row of another account's sync",
+        lambda w: [
+            (other_ledger := ledger_account()),
+            ledger_transaction(w.sync, account_id=other_ledger.id),
+        ],
+        "fk_transactions_ledger_sync",
+    ),
+    (
+        "transaction: ledger row of another owner's sync",
+        lambda w: [
+            (other_ledger := ledger_account(OTHER_OWNER_ID)),
+            ledger_transaction(w.sync, owner_id=OTHER_OWNER_ID, account_id=other_ledger.id),
+        ],
+        "fk_transactions_ledger_sync",
+    ),
     # owners (ADR 0007): accounts.owner_id must name a user; the other tables follow through
     # their composite keys to accounts
     ("account: unknown owner", lambda w: [account(uuid.uuid4())], "fk_accounts_owner"),
@@ -404,6 +544,36 @@ async def test_dedup_key_is_unique_only_per_account_and_occurrence(
         ]
     )
     await session.flush()
+
+
+async def test_ledger_entry_is_unique_only_per_account(session: AsyncSession, world: World) -> None:
+    # The same ledger account linked by two owners (each with their own ledger token) is two
+    # accounts here, each holding the entry once.
+    other = ledger_account(OTHER_OWNER_ID, ledger_account_id=world.ledger_acc.ledger_account_id)
+    second = ledger_account()
+    session.add_all([other, second])
+    await session.flush()
+    other_sync, second_sync = ledger_sync(other), ledger_sync(second)
+    session.add_all([other_sync, second_sync])
+    await session.flush()
+    entry_id = world.ledger_tx.ledger_entry_id
+    session.add_all(
+        [
+            ledger_transaction(other_sync, ledger_entry_id=entry_id),
+            ledger_transaction(second_sync, ledger_entry_id=entry_id),
+        ]
+    )
+    await session.flush()
+
+
+async def test_deleting_a_ledger_sync_with_transactions_is_restricted(
+    session: AsyncSession, world: World
+) -> None:
+    with pytest.raises(IntegrityError) as exc:
+        async with session.begin_nested():
+            await session.execute(delete(LedgerSync).where(LedgerSync.id == world.sync.id))
+
+    assert constraint_name(exc.value) == "fk_transactions_ledger_sync"
 
 
 async def test_account_name_the_domain_accepts_is_stored(session: AsyncSession) -> None:
@@ -518,6 +688,8 @@ async def test_row_counts_check_covers_both_counts(session: AsyncSession) -> Non
         ("ck_import_jobs_error_code_allowed", ImportFailureCode),
         ("ck_import_row_errors_code_allowed", FieldErrorCode),
         ("ck_import_row_errors_column_name_allowed", REQUIRED_COLUMNS),
+        ("ck_accounts_source_allowed", AccountSource),
+        ("ck_transactions_source_allowed", AccountSource),
     ],
 )
 async def test_check_constraint_values_match_the_domain(

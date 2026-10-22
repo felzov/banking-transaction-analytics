@@ -36,6 +36,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
+from transaction_analytics.domain.ledger import AccountSource
 from transaction_analytics.domain.money import Currency
 
 # Deterministic constraint names: migrations can drop them, and tests and the Phase 3 error
@@ -53,6 +54,8 @@ NAMING_CONVENTION = {
 ACTIVE_FILE_INDEX = "uq_import_jobs_active_file_sha256"
 # Named explicitly (the convention would list four columns); inserts skip rows that hit it.
 DEDUP_CONSTRAINT = "uq_transactions_dedup"
+# One owner links a ledger account once (ADR 0009); the account service maps its violation.
+LEDGER_LINK_CONSTRAINT = "uq_accounts_owner_id_ledger_account_id"
 
 
 class TextEnum[E: StrEnum](TypeDecorator[E]):
@@ -131,11 +134,22 @@ class Account(Base):
         # The other tables reach users through their composite foreign keys to accounts.
         ForeignKeyConstraint(["owner_id"], ["users.id"], name="owner", ondelete="RESTRICT"),
         UniqueConstraint("owner_id", "id"),
+        # Target for transactions (owner_id, account_id, source): a transaction's source must be
+        # its account's (ADR 0009).
+        UniqueConstraint("owner_id", "id", "source"),
+        # One owner links a ledger account once; NULLs (CSV accounts) never collide.
+        UniqueConstraint("owner_id", "ledger_account_id", name=LEDGER_LINK_CONSTRAINT),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     owner_id: Mapped[uuid.UUID]
     name: Mapped[str] = mapped_column(Text)
+    source: Mapped[AccountSource] = mapped_column(
+        TextEnum(AccountSource), server_default=AccountSource.CSV.value
+    )
+    # The linked banking-ledger-api user and account; set exactly when source is ledger.
+    ledger_user_id: Mapped[uuid.UUID | None]
+    ledger_account_id: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -182,22 +196,55 @@ class ImportJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class LedgerSync(Base):
+    """One read of a ledger account's statement (ADR 0009). Written once, in its final state
+    except duplicate_entries, in the transaction that stores its entries."""
+
+    __tablename__ = "ledger_syncs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["owner_id", "account_id"],
+            ["accounts.owner_id", "accounts.id"],
+            name="account",
+            ondelete="RESTRICT",
+        ),
+        # Target for fk_transactions_ledger_sync. Lookups by (owner_id, id) use the primary key.
+        UniqueConstraint("owner_id", "account_id", "id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_id: Mapped[uuid.UUID]
+    account_id: Mapped[uuid.UUID]
+    # Entries read from the ledger; duplicate_entries of them the account already held.
+    fetched_entries: Mapped[int] = mapped_column(Integer)
+    duplicate_entries: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    created_at: Mapped[datetime] = _created_at()
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
     __table_args__ = (
-        # Owner and account must match the import job's, not just exist.
+        # Owner and account must match the import job's, not just exist. Not checked for a
+        # ledger row: a foreign key containing a NULL column is skipped.
         ForeignKeyConstraint(
             ["owner_id", "account_id", "import_job_id"],
             ["import_jobs.owner_id", "import_jobs.account_id", "import_jobs.id"],
             name="import_job",
             ondelete="RESTRICT",
         ),
-        # Redundant while import_job_id is NOT NULL; the only guard once transactions can come
-        # from another source without an import job (Phase 7).
+        # The same for the sync that read a ledger row; skipped for a CSV row.
         ForeignKeyConstraint(
-            ["owner_id", "account_id"],
-            ["accounts.owner_id", "accounts.id"],
-            name="account",
+            ["owner_id", "account_id", "ledger_sync_id"],
+            ["ledger_syncs.owner_id", "ledger_syncs.account_id", "ledger_syncs.id"],
+            name="ledger_sync",
+            ondelete="RESTRICT",
+        ),
+        # Checked for every row: the account is the owner's and has this transaction's source,
+        # so a CSV row cannot land in a ledger account or the other way round (ADR 0009).
+        ForeignKeyConstraint(
+            ["owner_id", "account_id", "source"],
+            ["accounts.owner_id", "accounts.id", "accounts.source"],
+            name="account_source",
             ondelete="RESTRICT",
         ),
         UniqueConstraint("import_job_id", "row_number"),
@@ -214,14 +261,22 @@ class Transaction(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     owner_id: Mapped[uuid.UUID]
     account_id: Mapped[uuid.UUID]
-    import_job_id: Mapped[uuid.UUID]
-    row_number: Mapped[int] = mapped_column(Integer)
+    source: Mapped[AccountSource] = mapped_column(
+        TextEnum(AccountSource), server_default=AccountSource.CSV.value
+    )
+    # Set for a CSV row (its import and file row), NULL for a ledger row.
+    import_job_id: Mapped[uuid.UUID | None]
+    row_number: Mapped[int | None] = mapped_column(Integer)
+    # Set for a ledger row (its sync and the ledger's entry id), NULL for a CSV row.
+    ledger_sync_id: Mapped[uuid.UUID | None]
+    ledger_entry_id: Mapped[uuid.UUID | None]
     booked_on: Mapped[date] = mapped_column(Date)
     description: Mapped[str] = mapped_column(Text)
     normalized_description: Mapped[str] = mapped_column(Text)
     amount_minor: Mapped[int] = mapped_column(BigInteger)
     currency: Mapped[Currency] = mapped_column(TextEnum(Currency))
-    # SHA-256 of the dedup key and the k-th row with that key in the account (ADR 0006).
+    # SHA-256 of the dedup key and the k-th row with that key in the account (ADR 0006); for a
+    # ledger row, of its entry id, always occurrence 1 (ADR 0009).
     fingerprint: Mapped[bytes] = mapped_column(LargeBinary)
     occurrence: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = _created_at()

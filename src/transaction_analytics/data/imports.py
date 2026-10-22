@@ -75,7 +75,7 @@ async def find_active_job_id(
     return await session.scalar(statement)
 
 
-async def _insert_in_batches(
+async def insert_in_batches(
     session: AsyncSession, statement: Insert, rows: Iterable[dict[str, Any]]
 ) -> int:
     """Run `statement` once per batch; returns how many rows its RETURNING produced, if any."""
@@ -141,7 +141,7 @@ async def insert_transactions(
         }
         for row in in_insert_order(rows)
     )
-    return await _insert_in_batches(session, statement, parameters)
+    return await insert_in_batches(session, statement, parameters)
 
 
 async def set_duplicate_rows(session: AsyncSession, *, job: ImportJob, duplicate_rows: int) -> None:
@@ -156,7 +156,7 @@ async def set_duplicate_rows(session: AsyncSession, *, job: ImportJob, duplicate
 async def insert_row_errors(
     session: AsyncSession, *, job: ImportJob, errors: Sequence[RowError]
 ) -> None:
-    await _insert_in_batches(
+    await insert_in_batches(
         session,
         insert(ImportRowError),
         (

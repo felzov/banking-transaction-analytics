@@ -13,11 +13,13 @@ from transaction_analytics.data.models import (
     ApiToken,
     ImportJob,
     ImportRowError,
+    LedgerSync,
     Transaction,
     User,
 )
 from transaction_analytics.domain.errors import FieldErrorCode
 from transaction_analytics.domain.imports import ImportFailureCode, ImportStatus
+from transaction_analytics.domain.ledger import AccountSource, ledger_fingerprint
 from transaction_analytics.domain.money import Currency
 
 # Fixed, fake owners. conftest.py commits a users row for each into every migrated test database,
@@ -54,6 +56,27 @@ def api_token(owner_id: uuid.UUID = OWNER_ID, **overrides: Any) -> ApiToken:
 def account(owner_id: uuid.UUID = OWNER_ID, **overrides: Any) -> Account:
     values: dict[str, Any] = {"id": uuid.uuid4(), "owner_id": owner_id, "name": "Current account"}
     return Account(**(values | overrides))
+
+
+def ledger_account(owner_id: uuid.UUID = OWNER_ID, **overrides: Any) -> Account:
+    values: dict[str, Any] = {
+        "source": AccountSource.LEDGER,
+        "name": "Ledger account",
+        "ledger_user_id": uuid.uuid4(),
+        "ledger_account_id": uuid.uuid4(),
+    }
+    return account(owner_id, **(values | overrides))
+
+
+def ledger_sync(acc: Account, **overrides: Any) -> LedgerSync:
+    values: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "owner_id": acc.owner_id,
+        "account_id": acc.id,
+        "fetched_entries": 2,
+        "duplicate_entries": 0,
+    }
+    return LedgerSync(**(values | overrides))
 
 
 def job(acc: Account, **overrides: Any) -> ImportJob:
@@ -108,6 +131,29 @@ def transaction(import_job: ImportJob, **overrides: Any) -> Transaction:
         # Random, not derived from the fields: rows built here never collide on the dedup key,
         # so a test about another rule cannot be rejected by uq_transactions_dedup first.
         "fingerprint": os.urandom(32),
+        "occurrence": 1,
+    }
+    return Transaction(**(values | overrides))
+
+
+def ledger_transaction(sync: LedgerSync, **overrides: Any) -> Transaction:
+    """A ledger row: its fingerprint is derived from its entry id, as the schema requires."""
+    entry_id = overrides.pop("ledger_entry_id", uuid.uuid4())
+    values: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "owner_id": sync.owner_id,
+        "account_id": sync.account_id,
+        "source": AccountSource.LEDGER,
+        "import_job_id": None,
+        "row_number": None,
+        "ledger_sync_id": sync.id,
+        "ledger_entry_id": entry_id,
+        "booked_on": date(2026, 9, 1),
+        "description": "Ledger deposit",
+        "normalized_description": "ledger deposit",
+        "amount_minor": 2500,
+        "currency": Currency.GBP,
+        "fingerprint": None if entry_id is None else ledger_fingerprint(entry_id),
         "occurrence": 1,
     }
     return Transaction(**(values | overrides))
