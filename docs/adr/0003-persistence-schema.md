@@ -2,7 +2,8 @@
 
 - Status: Accepted; the file-hash uniqueness rule is superseded by ADR 0004 (migration 0002);
   item 1 amended by ADR 0007 (owner_id references users, migration 0004); item 7 extended by
-  ADR 0008 (migration 0005)
+  ADR 0008 (migration 0005); item 2 amended by ADR 0009 (migration 0006: ledger transactions,
+  fk_transactions_account replaced by fk_transactions_account_source)
 - Date: 2026-10-16
 
 ## Context
@@ -25,6 +26,9 @@ deduplication in Phase 4, a second transaction source (ledger) in Phase 7.
    - `transactions (owner_id, account_id) → accounts (owner_id, id)`: redundant while
      `import_job_id` is NOT NULL; it becomes the only guard once transactions can exist without
      an import job (Phase 7), because a FK containing a NULL column is not checked.
+     → Phase 7 (ADR 0009): replaced by `(owner_id, account_id, source) → accounts (owner_id, id,
+     source)`, which also stops a row of one source in an account of the other; ledger rows
+     reference `ledger_syncs (owner_id, account_id, id)` instead of an import job.
    - `import_row_errors (owner_id, import_job_id) → import_jobs (owner_id, id)`
 
    A composite FK needs a UNIQUE constraint on exactly the referenced columns, hence the extra

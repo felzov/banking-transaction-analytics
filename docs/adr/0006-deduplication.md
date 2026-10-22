@@ -1,6 +1,6 @@
 # ADR 0006 — Deduplication: exact keys, multiset union, enforced by a unique constraint
 
-- Status: Accepted
+- Status: Accepted; extended by ADR 0009 (ledger rows: fingerprint of the entry id, occurrence 1)
 - Date: 2026-10-18
 
 ## Context
@@ -87,7 +87,8 @@ Key-order inserts with 1 000-row batches measured 0.06–0.12 s stalls; see item
   same key order, or the deadlock comes back.
 - Which skipped row matched which stored transaction is not recorded.
 - Transactions from another source (Phase 7) need a fingerprint and occurrence too, or a decision to
-  exclude them from dedup.
+  exclude them from dedup. → ADR 0009: a ledger row's fingerprint is the hash of its ledger entry
+  id, its occurrence 1; it uses this constraint and the same key-order inserts.
 
 ## Alternatives considered
 
