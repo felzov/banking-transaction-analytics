@@ -70,3 +70,52 @@ class ImportProcessingError(ServiceError):
     def __init__(self, failed_import_id: uuid.UUID | None) -> None:
         super().__init__()
         self.failed_import_id = failed_import_id
+
+
+class AccountSourceMismatchError(ServiceError):
+    """A CSV upload to a ledger account, or a ledger sync of a CSV account (ADR 0009)."""
+
+    code = "account_source_mismatch"
+    message = "This account's transactions come from another source."
+
+
+class LedgerAccountAlreadyLinkedError(ServiceError):
+    code = "ledger_account_already_linked"
+    message = "This ledger account is already linked to one of your accounts."
+
+
+class LedgerSyncNotFoundError(ServiceError):
+    code = "ledger_sync_not_found"
+    message = "Ledger sync not found."
+
+
+class LedgerNotConfiguredError(ServiceError):
+    code = "ledger_not_configured"
+    message = "Ledger syncs are not configured on this server."
+
+
+class LedgerTokenRejectedError(ServiceError):
+    code = "ledger_token_rejected"
+    message = "The ledger rejected the token. Log in to the ledger again and retry."
+
+
+class LedgerAccountUnavailableError(ServiceError):
+    code = "ledger_account_unavailable"
+    message = "The linked ledger account cannot be read with this token."
+
+
+class LedgerTooManyEntriesError(ServiceError):
+    code = "ledger_too_many_entries"
+    message = "The ledger account has more entries to read than one sync may read."
+
+
+class LedgerUnavailableError(ServiceError):
+    code = "ledger_unavailable"
+    message = "The ledger is not available. Please try again later."
+
+
+class LedgerInvalidResponseError(ServiceError):
+    """The ledger answered, but with something malformed or inconsistent. Nothing is stored."""
+
+    code = "ledger_invalid_response"
+    message = "The ledger returned an invalid statement. Nothing was stored."

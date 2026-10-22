@@ -6,11 +6,27 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from transaction_analytics.data.models import Account
+from transaction_analytics.domain.ledger import AccountSource, LedgerLink
 
 
-async def add_account(session: AsyncSession, *, owner_id: uuid.UUID, name: str) -> Account:
+async def add_account(
+    session: AsyncSession, *, owner_id: uuid.UUID, name: str, ledger: LedgerLink | None = None
+) -> Account:
+    """A CSV account, or with `ledger` an account fed by that ledger account (ADR 0009). The
+    link is one value, so the source and both ids always agree."""
+    source = AccountSource.CSV if ledger is None else AccountSource.LEDGER
     # INSERT ... RETURNING loads server defaults (id, created_at) without a second query.
-    statement = insert(Account).values(owner_id=owner_id, name=name).returning(Account)
+    statement = (
+        insert(Account)
+        .values(
+            owner_id=owner_id,
+            name=name,
+            source=source,
+            ledger_user_id=None if ledger is None else ledger.user_id,
+            ledger_account_id=None if ledger is None else ledger.account_id,
+        )
+        .returning(Account)
+    )
     return (await session.scalars(statement)).one()
 
 

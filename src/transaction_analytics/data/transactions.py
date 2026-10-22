@@ -2,7 +2,8 @@
 
 Every function requires owner_id and account_id; there is no unscoped lookup. All of them are
 served by ix_transactions_owner_id_account_id_booked_on_id. They read transactions only, not
-import_jobs: any transaction an account holds counts, whatever its source (Phase 7).
+import_jobs: any transaction an account holds counts, whatever its source (ADR 0009: an
+account has one source, so nothing is counted twice).
 """
 
 import uuid
@@ -38,7 +39,9 @@ def _scope(
 # What the listing returns (api/schemas.TransactionOut) and what its cursor needs.
 _LISTED_COLUMNS = (
     Transaction.id,
+    Transaction.source,
     Transaction.import_job_id,
+    Transaction.ledger_entry_id,
     Transaction.booked_on,
     Transaction.description,
     Transaction.currency,

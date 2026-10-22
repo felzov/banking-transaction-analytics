@@ -28,9 +28,18 @@ from transaction_analytics.data.errors import constraint_name, error_kind
 from transaction_analytics.domain.errors import CodedValidationError
 from transaction_analytics.services.errors import (
     AccountNotFoundError,
+    AccountSourceMismatchError,
     DuplicateImportError,
     ImportNotFoundError,
     ImportProcessingError,
+    LedgerAccountAlreadyLinkedError,
+    LedgerAccountUnavailableError,
+    LedgerInvalidResponseError,
+    LedgerNotConfiguredError,
+    LedgerSyncNotFoundError,
+    LedgerTokenRejectedError,
+    LedgerTooManyEntriesError,
+    LedgerUnavailableError,
     NotAuthenticatedError,
     ServiceError,
     TokenNotFoundError,
@@ -53,6 +62,18 @@ SERVICE_ERROR_STATUS: dict[type[ServiceError], int] = {
     ImportNotFoundError: 404,
     DuplicateImportError: 409,
     ImportProcessingError: 500,
+    AccountSourceMismatchError: 409,
+    LedgerAccountAlreadyLinkedError: 409,
+    LedgerSyncNotFoundError: 404,
+    LedgerNotConfiguredError: 503,
+    # The caller's ledger token or link is wrong: not our 401 (that is about our own token, and
+    # would carry WWW-Authenticate), and nothing failed upstream.
+    LedgerTokenRejectedError: 422,
+    LedgerAccountUnavailableError: 422,
+    LedgerTooManyEntriesError: 422,
+    # The ledger, an upstream server, failed or answered nonsense (RFC 9110 section 15.6.3).
+    LedgerUnavailableError: 502,
+    LedgerInvalidResponseError: 502,
 }
 
 
