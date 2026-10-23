@@ -120,6 +120,55 @@ def test_ledger_limits_must_be_positive(monkeypatch: pytest.MonkeyPatch, name: s
         Settings(_env_file=None)  # type: ignore[call-arg]
 
 
+def test_operational_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    for name in (
+        "DB_STATEMENT_TIMEOUT_SECONDS",
+        "DB_CONNECT_TIMEOUT_SECONDS",
+        "LOG_LEVEL",
+        "RATE_LIMIT_PER_MINUTE",
+        "RATE_LIMIT_BURST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.db_statement_timeout_seconds == 30
+    assert settings.db_connect_timeout_seconds == 5
+    assert settings.log_level == "INFO"
+    assert settings.rate_limit_per_minute == 120
+    assert settings.rate_limit_burst == 30
+
+
+def test_log_level_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+
+    assert Settings(_env_file=None).log_level == "DEBUG"  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("LOG_LEVEL", "LOUD"),
+        ("DB_STATEMENT_TIMEOUT_SECONDS", "0"),
+        ("DB_STATEMENT_TIMEOUT_SECONDS", "-1"),
+        ("DB_CONNECT_TIMEOUT_SECONDS", "0"),
+        ("RATE_LIMIT_PER_MINUTE", "-1"),
+        ("RATE_LIMIT_BURST", "0"),
+    ],
+)
+def test_operational_settings_are_checked(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    # A statement timeout of 0 would mean "no limit" to PostgreSQL, so it is refused.
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
 @pytest.mark.parametrize(
     "value",
     [

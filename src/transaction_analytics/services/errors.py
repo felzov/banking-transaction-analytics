@@ -114,6 +114,14 @@ class LedgerUnavailableError(ServiceError):
     message = "The ledger is not available. Please try again later."
 
 
+class NotReadyError(ServiceError):
+    """The readiness probe failed (ADR 0010). Why is logged, never returned: the probe needs no
+    token."""
+
+    code = "not_ready"
+    message = "Service is not ready."
+
+
 class LedgerInvalidResponseError(ServiceError):
     """The ledger answered, but with something malformed or inconsistent. Nothing is stored."""
 

@@ -51,7 +51,8 @@ Authentication arrives in Phase 5, but endpoints need an owner now.
 
 - ~~Until Phase 5, anyone who can reach the API acts as the one configured owner.~~ Since ADR 0007
   every route except `/health` needs an API token. `make run` still binds 127.0.0.1: there is no
-  TLS and no rate limiting yet (Phase 8).
+  TLS and no rate limiting yet (Phase 8). → ADR 0010: TLS at the reverse proxy, a rate limit per
+  client address in the app, and `/ready` as a second public route.
 - Debugging a 500 relies on the logged class name, constraint name and source location, not the
   message. This is deliberate; reproducing with synthetic data is the way to get details.
 - A non-standard HTTP status (e.g. 499) keeps its code, with the generic message "HTTP error".

@@ -23,8 +23,9 @@ NOT_AUTHENTICATED = {
 }
 
 # Routes anyone may call. Everything else must depend on get_owner_id. (/docs and /openapi.json
-# are not API routes and are always public: they describe the API, not anyone's data.)
-PUBLIC_PATHS = {"/health"}
+# are not API routes and are always public: they describe the API, not anyone's data.) The probes
+# are public because a load balancer or deploy script has no token (ADR 0010).
+PUBLIC_PATHS = {"/health", "/ready"}
 
 
 class _NoDatabase:
@@ -85,6 +86,7 @@ def test_every_route_is_in_the_schema(app: FastAPI) -> None:
         ("GET", "/imports/{import_id}/errors"),
         ("GET", "/ledger-syncs/{sync_id}"),
         ("GET", "/me"),
+        ("GET", "/ready"),
         ("POST", "/accounts"),
         ("POST", "/accounts/{account_id}/imports"),
         ("POST", "/accounts/{account_id}/ledger-syncs"),
@@ -163,3 +165,4 @@ def test_openapi_documents_the_bearer_scheme(app: FastAPI) -> None:
     assert schema["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
     assert schema["paths"]["/me"]["get"]["security"] == [{"HTTPBearer": []}]
     assert "security" not in schema["paths"]["/health"]["get"]
+    assert "security" not in schema["paths"]["/ready"]["get"]

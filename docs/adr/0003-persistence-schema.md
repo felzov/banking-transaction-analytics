@@ -131,6 +131,7 @@ deduplication in Phase 4, a second transaction source (ledger) in Phase 7.
   violate `ck_import_jobs_finished_after_started` and leave the job stuck in `processing`.
 - **Phase 3 (done, migration 0002):** validate account names in the domain (the CHECK only trims
   spaces, so a name of tabs or a no-break space passes), then tighten the CHECK to match.
-- **Phase 8:** `migrations/env.py` calls `fileConfig(alembic.ini)`. If the app runs migrations
-  programmatically, that reconfigures the root logger (level, stderr handler); pass a config
-  without logging sections or skip `fileConfig` in that path.
+- **Phase 8 (done, ADR 0010):** `migrations/env.py` calls `fileConfig(alembic.ini)`. If the app
+  runs migrations programmatically, that reconfigures the root logger (level, stderr handler); pass
+  a config without logging sections or skip `fileConfig` in that path. → Not needed: migrations
+  run as their own process before the app starts, never inside it.

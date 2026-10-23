@@ -41,6 +41,7 @@ from transaction_analytics.services.errors import (
     LedgerTooManyEntriesError,
     LedgerUnavailableError,
     NotAuthenticatedError,
+    NotReadyError,
     ServiceError,
     TokenNotFoundError,
     UserDisabledError,
@@ -74,6 +75,7 @@ SERVICE_ERROR_STATUS: dict[type[ServiceError], int] = {
     # The ledger, an upstream server, failed or answered nonsense (RFC 9110 section 15.6.3).
     LedgerUnavailableError: 502,
     LedgerInvalidResponseError: 502,
+    NotReadyError: 503,
 }
 
 
@@ -128,6 +130,8 @@ async def _service_error(request: Request, exc: ServiceError) -> JSONResponse:
         headers = {
             "WWW-Authenticate": 'Bearer error="invalid_token"' if exc.token_sent else "Bearer"
         }
+    elif isinstance(exc, NotReadyError):
+        headers = {"Cache-Control": "no-store"}  # a probe's answer is about this moment only
     return error_response(
         SERVICE_ERROR_STATUS.get(type(exc), 500), exc.code, exc.message, headers=headers, **extra
     )

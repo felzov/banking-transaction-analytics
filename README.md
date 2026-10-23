@@ -4,9 +4,9 @@
 
 Import, validate, normalize, deduplicate and analyze bank-statement transactions.
 
-**Status: early development (Phase 7 of 8).** What exists today:
+**Status: early development (Phase 8 of 8).** What exists today:
 
-- `/health` liveness endpoint (FastAPI).
+- `/health` (liveness) and `/ready` (database reachable and migrated) probes (FastAPI).
 - A pure, fully unit-tested domain layer: a CSV statement parser that returns valid transactions
   plus row-level errors, with explicit money, date and description rules.
 - PostgreSQL schema (SQLAlchemy models + Alembic migrations) for accounts, import jobs,
@@ -26,6 +26,9 @@ Import, validate, normalize, deduplicate and analyze bank-statement transactions
 - A second source: accounts linked to a [banking-ledger-api](https://github.com/felzov/banking-ledger-api)
   account, synced on request with the caller's ledger token (never stored), checked entry by entry
   and deduplicated by the ledger's entry id ([ADR 0009](docs/adr/0009-ledger-source.md)).
+- Running on one server: a rate limit per client address, app logs with time and level, database
+  timeouts, and a systemd + reverse proxy setup ([ADR 0010](docs/adr/0010-operational-readiness.md),
+  [Running on a server](#running-on-a-server-adr-0010)).
 
 Not built yet: totals across accounts, categories or merchant grouping, export, self-service
 sign-up or password login.
@@ -141,10 +144,15 @@ Interactive docs: http://127.0.0.1:8000/docs.
 | `GET /imports/{id}/errors?after_row=&limit=` | 200 | 401, 404, 422 |
 | `GET /accounts/{id}/transactions?from=&to=&limit=&cursor=` | 200 | 401, 404, 422 |
 | `GET /accounts/{id}/summary?from=&to=`, `GET /accounts/{id}/summary/monthly?from=&to=` | 200 | 401, 404, 422 |
-| `GET /health` | 200 | — (no token needed) |
+| `GET /health` | 200 | 429 (no token needed) |
+| `GET /ready` | 200 | 503 `not_ready`, 429 (no token needed; see [Running on a server](#running-on-a-server-adr-0010)) |
+
+Every endpoint, the probes included, can answer 429 `rate_limited` with `Retry-After`
+(seconds) when one client address sends too many requests (ADR 0010).
 
 An upload without a valid token gets 401 before its body is read. A JSON body over 64 KiB gets 413
-before authentication (the size limit sits in front of the app).
+before authentication (the size limit sits in front of the app), and a rate-limited request gets
+429 before either.
 
 - The import runs synchronously in the request. Valid rows are stored and every invalid row is
   reported; there is no error threshold.
@@ -158,8 +166,8 @@ before authentication (the size limit sits in front of the app).
   with the same error, the earlier failed import is returned (200) instead of a new one.
 - Errors are `{"error": {"code", "message"}}` with fixed text, never values from the request or
   the file. Another owner's account or import is 404.
-- There is no TLS and no rate limiting yet (Phase 8): keep the server on localhost or behind a proxy
-  that provides both.
+- The app speaks plain HTTP on 127.0.0.1; TLS is the reverse proxy's job
+  ([Running on a server](#running-on-a-server-adr-0010)).
 
 ### Amounts, totals and paging (ADR 0008)
 
@@ -233,6 +241,86 @@ curl -si -X POST localhost:8000/accounts/<account_id>/ledger-syncs -H "$AUTH" \
 | `LEDGER_SYNC_TIMEOUT_SECONDS` | 120 | One deadline for all ledger calls of a sync |
 | `LEDGER_SYNC_MAX_ENTRIES` | 50000 | Entries one sync may read |
 
+## Running on a server (ADR 0010)
+
+One host (a VPS), one app process, behind a reverse proxy that terminates TLS. No container image:
+the server runs a checkout with its virtualenv, under systemd. PostgreSQL 17 runs on the same host
+or as a managed service; backups are its operator's job.
+
+```bash
+# As the service user, in /opt/banking-transaction-analytics (a checkout of a release)
+uv sync --locked --no-dev        # .venv with the locked runtime dependencies only
+```
+
+Configuration comes from the environment: put `DATABASE_URL` and any settings below in
+`/etc/transaction-analytics.env` (owner root, mode 600), not in a `.env` in the checkout.
+
+```ini
+# /etc/systemd/system/transaction-analytics.service
+[Unit]
+Description=Banking Transaction Analytics
+# postgresql.service orders the start after a PostgreSQL on this host; without one it is ignored.
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+User=analytics
+WorkingDirectory=/opt/banking-transaction-analytics
+EnvironmentFile=/etc/transaction-analytics.env
+# Migrations run before every start, as their own process, never inside the app.
+ExecStartPre=/opt/banking-transaction-analytics/.venv/bin/alembic upgrade head
+ExecStart=/opt/banking-transaction-analytics/.venv/bin/uvicorn transaction_analytics.main:app \
+    --host 127.0.0.1 --port 8000 --workers 1 \
+    --proxy-headers --forwarded-allow-ips 127.0.0.1 \
+    --timeout-graceful-shutdown 30 --no-server-header
+Restart=on-failure
+# Not systemd's 100 ms: five quick failures (e.g. the database still starting) would hit its start
+# limit and leave the service down.
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```text
+# /etc/caddy/Caddyfile: TLS certificates are obtained and renewed automatically
+api.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+Deploy a new version: update the checkout, `uv sync --locked --no-dev`, then
+`sudo systemctl restart transaction-analytics` (stop, migrate, start; a few seconds of downtime) and
+wait until it is ready: `curl --fail --retry 15 --retry-all-errors --retry-delay 1 localhost:8000/ready`.
+
+- **`--workers 1`**: the rate limit is kept in the process's memory; more workers would each allow
+  the full rate.
+- **`--forwarded-allow-ips`** must name the proxy, and only the proxy. uvicorn then takes the
+  client's address from `X-Forwarded-For`, which Caddy sets itself (it ignores what clients send
+  unless told to trust them). `*` would let any client choose its address and escape the rate
+  limit; a proxy left out would put every client into one shared limit.
+- **Probes**: `/health` is liveness (the process answers; never touches the database). `/ready` is
+  200 only when the database answers within 2 s and is migrated to exactly this code's revision;
+  otherwise 503 `not_ready`, with the reason in the log. Point deploy scripts and uptime monitors
+  at `/ready`. Both probes count against the rate limit like any request: the deploy command
+  below and a monitor polling every minute stay well within it. Rolling the code back below a migration needs
+  `.venv/bin/alembic downgrade <revision>` first, or `/ready` stays 503.
+- **Logs** go to the journal (`journalctl -u transaction-analytics`): uvicorn's own lines and
+  access log, and the app's as `<time> <LEVEL> <logger> <message>`. Neither contains amounts or
+  descriptions.
+- **New migrations**: an index on a big table is built with `CREATE INDEX CONCURRENTLY` inside
+  `with op.get_context().autocommit_block():`, so it does not block writes while it builds.
+
+| Setting | Default | |
+|---|---|---|
+| `RATE_LIMIT_PER_MINUTE` | 120 | Requests per minute per client address (IPv6: per /64); `0` turns the limit off |
+| `RATE_LIMIT_BURST` | 30 | Requests a client may send at once before the per-minute rate applies |
+| `DB_STATEMENT_TIMEOUT_SECONDS` | 30 | PostgreSQL cancels an app statement that runs longer (a 500). Migrations and the CLI have no limit |
+| `DB_CONNECT_TIMEOUT_SECONDS` | 5 | Per new database connection |
+| `LOG_LEVEL` | INFO | The app's own loggers: DEBUG, INFO, WARNING or ERROR |
+
 ## Tests
 
 | Command | Runs | Needs |
@@ -303,9 +391,11 @@ src/transaction_analytics/
   data/        SQLAlchemy models, engine/session factories, owner-scoped queries, DB error helpers
   integrations/ HTTP client for banking-ledger-api (outbound I/O, no business rules)
   services/    use cases and transaction boundaries (accounts, imports, ledger syncs, users, tokens)
-  api/         FastAPI routers (thin), dependencies (incl. authentication), schemas, error handling
+  api/         FastAPI routers (thin), dependencies (incl. authentication), schemas, error handling,
+               body size and rate limits
   cli.py       operator commands for users and API tokens (thin, like api/)
   settings.py  configuration from environment / .env
+  log_config.py handler and format for the app's own loggers
   main.py      app factory
 migrations/    Alembic environment and versions
 tests/
@@ -327,8 +417,9 @@ docs/adr/      architecture decision records
 - Duplicates stored before Phase 4 (migration 0003) stay.
 - The parser holds the whole file in memory (bounded by the 5 MiB limit).
 - Authentication is API tokens only, managed by an operator with shell and database access: no
-  sign-up, no password login, no token endpoints. No rate limiting of failed attempts and no
-  "last used" time (ADR 0007).
+  sign-up, no password login, no token endpoints. Failed attempts count against the general rate
+  limit only; there is no stricter limit or lockout for them, and no "last used" time (ADR 0007,
+  ADR 0010).
 - Imports are synchronous: the client waits while the file is parsed and stored (about 4 s for
   50 000 rows in the integration test); a database connection is held only for the insert. `started_at` and `finished_at` are
   the same instant (the import transaction's start), not a duration.
@@ -349,6 +440,12 @@ docs/adr/      architecture decision records
   history cannot be synced the first time (all or nothing, newest first). Failed syncs, and syncs
   that found nothing new, are not recorded. Ledger entries are booked on their UTC date
   (ADR 0009).
+- The rate limit lives in one process's memory (ADR 0010): it resets on restart, does not hold
+  across several workers or hosts, and a client with more than 10 000 addresses (or IPv6 /64s) is
+  not limited. A refused request still costs the one event loop its parsing and a 429: a flood is
+  kept away from the database, not from the CPU. Shedding floods needs limits in front of the
+  server (proxy or firewall).
+- One app process: every deploy has a few seconds of downtime, and there are no metrics.
 
 ## Decisions
 
@@ -361,3 +458,4 @@ docs/adr/      architecture decision records
 - [ADR 0007 — Authentication: opaque API tokens, stored hashed, issued by a CLI](docs/adr/0007-authentication.md)
 - [ADR 0008 — Analytics: per-account, per-currency SQL totals; money in API responses](docs/adr/0008-analytics.md)
 - [ADR 0009 — Ledger source: accounts fed by banking-ledger-api, pulled per request](docs/adr/0009-ledger-source.md)
+- [ADR 0010 — Operational readiness: probes, in-process rate limit, app logs, database timeouts](docs/adr/0010-operational-readiness.md)
