@@ -71,7 +71,9 @@ owner's resource exists.
 ## Known limitations
 
 - No rate limiting of failed attempts. Guessing is hopeless (256 bits), but each well-formed fake
-  token costs one indexed query; a proxy or Phase 8 should limit request rates.
+  token costs one indexed query; a proxy or Phase 8 should limit request rates. → ADR 0010: every
+  request counts against a per-address limit before the token is looked up; there is no separate
+  limit for failed attempts.
 - No `last_used_at`: writing it on every request would turn reads into writes. Unused tokens are
   found by their expiry instead.
 - `api_tokens (owner_id, created_at)` is indexed for `list-tokens` and the RESTRICT check of its
