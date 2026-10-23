@@ -126,6 +126,8 @@ def test_operational_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "DB_STATEMENT_TIMEOUT_SECONDS",
         "DB_CONNECT_TIMEOUT_SECONDS",
         "LOG_LEVEL",
+        "RATE_LIMIT_PER_MINUTE",
+        "RATE_LIMIT_BURST",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -134,6 +136,8 @@ def test_operational_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.db_statement_timeout_seconds == 30
     assert settings.db_connect_timeout_seconds == 5
     assert settings.log_level == "INFO"
+    assert settings.rate_limit_per_minute == 120
+    assert settings.rate_limit_burst == 30
 
 
 def test_log_level_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -150,6 +154,8 @@ def test_log_level_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
         ("DB_STATEMENT_TIMEOUT_SECONDS", "0"),
         ("DB_STATEMENT_TIMEOUT_SECONDS", "-1"),
         ("DB_CONNECT_TIMEOUT_SECONDS", "0"),
+        ("RATE_LIMIT_PER_MINUTE", "-1"),
+        ("RATE_LIMIT_BURST", "0"),
     ],
 )
 def test_operational_settings_are_checked(

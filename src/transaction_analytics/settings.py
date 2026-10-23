@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import (
     AnyHttpUrl,
+    NonNegativeInt,
     PositiveFloat,
     PositiveInt,
     SecretStr,
@@ -28,6 +29,11 @@ class Settings(BaseSettings):
 
     # Level of the app's own loggers (ADR 0010); uvicorn's are set with its own options.
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+    # Requests per minute per client address, up to rate_limit_burst at once (ADR 0010).
+    # 0 turns the limit off, e.g. when the proxy in front already limits.
+    rate_limit_per_minute: NonNegativeInt = 120
+    rate_limit_burst: PositiveInt = 30
 
     import_max_bytes: PositiveInt = DEFAULT_MAX_BYTES
     import_max_rows: PositiveInt = DEFAULT_MAX_ROWS
