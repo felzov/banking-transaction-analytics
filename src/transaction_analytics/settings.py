@@ -1,8 +1,15 @@
 """Runtime configuration from environment variables (and a local, git-ignored .env file)."""
 
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import AnyHttpUrl, PositiveFloat, PositiveInt, SecretStr, field_validator
+from pydantic import (
+    AnyHttpUrl,
+    PositiveFloat,
+    PositiveInt,
+    SecretStr,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from transaction_analytics.domain.csv_parser import DEFAULT_MAX_BYTES, DEFAULT_MAX_ROWS
@@ -15,6 +22,13 @@ class Settings(BaseSettings):
     # SecretStr: the URL contains the password, so repr/str/validation output must mask it.
     database_url: SecretStr
 
+    # The app's connections only (ADR 0010); migrations and the CLI run without these limits.
+    db_statement_timeout_seconds: PositiveFloat = 30.0
+    db_connect_timeout_seconds: PositiveFloat = 5.0
+
+    # Level of the app's own loggers (ADR 0010); uvicorn's are set with its own options.
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
     import_max_bytes: PositiveInt = DEFAULT_MAX_BYTES
     import_max_rows: PositiveInt = DEFAULT_MAX_ROWS
 
@@ -26,6 +40,11 @@ class Settings(BaseSettings):
     ledger_sync_timeout_seconds: PositiveFloat = 120.0
     # Entries one sync may read; a longer history than this cannot be synced (ADR 0009).
     ledger_sync_max_entries: PositiveInt = DEFAULT_MAX_ROWS
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _log_level_in_capitals(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
 
     @field_validator("ledger_api_url")
     @classmethod

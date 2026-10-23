@@ -12,6 +12,7 @@ from transaction_analytics.api.limits import RequestSizeLimitMiddleware
 from transaction_analytics.api.transactions import router as transactions_router
 from transaction_analytics.api.users import router as users_router
 from transaction_analytics.data.db import create_engine, create_sessionmaker
+from transaction_analytics.log_config import configure_logging
 from transaction_analytics.settings import get_settings
 
 
@@ -19,7 +20,13 @@ from transaction_analytics.settings import get_settings
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Settings and the engine are created on startup, not at import time, so importing the app
     # (unit tests, tooling) needs no DATABASE_URL.
-    engine = create_engine(get_settings().database_url.get_secret_value())
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    engine = create_engine(
+        settings.database_url.get_secret_value(),
+        statement_timeout_seconds=settings.db_statement_timeout_seconds,
+        connect_timeout_seconds=settings.db_connect_timeout_seconds,
+    )
     app.state.sessionmaker = create_sessionmaker(engine)
     try:
         yield

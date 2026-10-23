@@ -1,17 +1,16 @@
-"""The real server's error log, end to end: uvicorn in-process on a free local port.
+"""The real server's log, end to end: uvicorn in-process on a free local port.
 
 uvicorn logs "Exception in ASGI application" with the full traceback (including str(exc)) for
 any exception that escapes the app. A DBAPIError's text can carry row values (ADR 0003, item 10),
 so nothing may escape: SafeErrorMiddleware must turn it into a 500 first (ADR 0005).
 """
 
-import asyncio
 import logging
-import socket
 
 import httpx2
 import pytest
-import uvicorn
+from fastapi import FastAPI
+from live_server import live_server
 from sqlalchemy.exc import DBAPIError
 
 from transaction_analytics.main import create_app
@@ -19,35 +18,45 @@ from transaction_analytics.main import create_app
 MARKER = "LEAK-ME-3456"
 
 
-async def test_unhandled_database_error_never_reaches_the_server_log(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def _app_with_a_database_error() -> FastAPI:
     app = create_app()
 
     @app.get("/boom")
     def boom() -> None:
         raise DBAPIError("INSERT ...", {"description": MARKER}, Exception(f"value {MARKER}"))
 
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    # log_config=None: uvicorn keeps its loggers propagating, so caplog sees what it would log.
-    server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_config=None))
+    return app
 
+
+async def test_unhandled_database_error_never_reaches_the_server_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     with caplog.at_level(logging.DEBUG):
-        serving = asyncio.create_task(server.serve(sockets=[sock]))
-        try:
-            for _ in range(500):
-                if server.started:
-                    break
-                await asyncio.sleep(0.01)
-            port = sock.getsockname()[1]
-            async with httpx2.AsyncClient() as client:
-                response = await client.get(f"http://127.0.0.1:{port}/boom")
-        finally:
-            server.should_exit = True
-            await serving
+        async with (
+            live_server(_app_with_a_database_error(), lifespan="off") as url,
+            httpx2.AsyncClient() as client,
+        ):
+            response = await client.get(f"{url}/boom")
 
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "internal_error"
     assert "Exception in ASGI application" not in caplog.text
     assert MARKER not in caplog.text
+
+
+async def test_app_errors_are_logged_with_time_level_and_logger(
+    app_environment: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The lifespan configures the app's loggers (ADR 0010). Without it, uvicorn's log config left
+    # them to Python's last-resort handler: a bare message on stderr, INFO dropped.
+    async with (
+        live_server(_app_with_a_database_error(), lifespan="on") as url,
+        httpx2.AsyncClient() as client,
+    ):
+        response = await client.get(f"{url}/boom")
+
+    captured = capsys.readouterr()
+    assert response.status_code == 500
+    (line,) = [line for line in captured.out.splitlines() if "Unhandled" in line]
+    assert " ERROR transaction_analytics.api.errors Unhandled DBAPIError" in line
+    assert MARKER not in captured.out + captured.err
