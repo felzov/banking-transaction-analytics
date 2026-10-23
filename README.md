@@ -2,38 +2,46 @@
 
 [![CI](https://github.com/felzov/banking-transaction-analytics/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/felzov/banking-transaction-analytics/actions/workflows/ci.yml)
 
-Import, validate, normalize, deduplicate and analyze bank-statement transactions.
+Import, validate, normalize, deduplicate and analyze bank-statement transactions, from uploaded
+CSV statements or from a [banking-ledger-api](https://github.com/felzov/banking-ledger-api) account.
 
-**Status: early development (Phase 8 of 8).** What exists today:
+**Status: complete.** All eight planned phases are built and merged; CI runs lint, unit and
+integration tests on Python 3.12 and 3.14 against PostgreSQL 17. It has not been used in
+production, and the target users (accountants, bookkeepers, freelancers, small businesses) are
+hypotheses that have **not** been validated.
 
-- `/health` (liveness) and `/ready` (database reachable and migrated) probes (FastAPI).
-- A pure, fully unit-tested domain layer: a CSV statement parser that returns valid transactions
-  plus row-level errors, with explicit money, date and description rules.
-- PostgreSQL schema (SQLAlchemy models + Alembic migrations) for accounts, import jobs,
-  transactions and row errors, with ownership and data rules enforced by constraints
-  ([ADR 0003](docs/adr/0003-persistence-schema.md)).
-- An HTTP API to create accounts, upload a statement CSV and read the import result and its
-  row errors ([ADR 0004](docs/adr/0004-import-pipeline.md),
-  [ADR 0005](docs/adr/0005-api-conventions.md)).
-- Deduplication on re-import: rows an account already holds are skipped and counted, so corrected,
-  overlapping or re-saved statements can be uploaded safely
+**Stack:** Python 3.12+, FastAPI, Pydantic, SQLAlchemy 2 (async, asyncpg), PostgreSQL 17, Alembic,
+pytest, Ruff, uv, GitHub Actions.
+
+## What it does
+
+- **Strict CSV parsing** in a pure, unit-tested domain layer: valid transactions plus row-level
+  errors, with explicit money, date and description rules. Amounts are integer minor units, never
+  floats, and nothing is rounded ([ADR 0001](docs/adr/0001-money-signed-minor-units.md),
+  [ADR 0002](docs/adr/0002-csv-parsing-policy.md)).
+- **Imports over HTTP**: create accounts, upload a statement and read the result and its row
+  errors. Valid rows are stored even when others fail; error messages never echo file values
+  ([ADR 0004](docs/adr/0004-import-pipeline.md), [ADR 0005](docs/adr/0005-api-conventions.md)).
+- **Deduplication on re-import**: rows an account already holds are skipped and counted, so
+  corrected, overlapping or re-saved statements can be uploaded safely
   ([ADR 0006](docs/adr/0006-deduplication.md)).
-- Authentication with personal API tokens (`Authorization: Bearer ...`), issued and revoked with an
-  operator CLI. Every owner is a user; another user's data is invisible
-  ([ADR 0007](docs/adr/0007-authentication.md)).
-- Reading an account back: its transactions (newest first, paged), and inflow, outflow and net
-  per currency, overall or per month ([ADR 0008](docs/adr/0008-analytics.md)).
-- A second source: accounts linked to a [banking-ledger-api](https://github.com/felzov/banking-ledger-api)
-  account, synced on request with the caller's ledger token (never stored), checked entry by entry
-  and deduplicated by the ledger's entry id ([ADR 0009](docs/adr/0009-ledger-source.md)).
-- Running on one server: a rate limit per client address, app logs with time and level, database
-  timeouts, and a systemd + reverse proxy setup ([ADR 0010](docs/adr/0010-operational-readiness.md),
+- **Ownership in the schema**: PostgreSQL constraints enforce ownership and data rules, and every
+  query is scoped to the authenticated owner ([ADR 0003](docs/adr/0003-persistence-schema.md)).
+- **API tokens** (`Authorization: Bearer ...`), issued and revoked with an operator CLI and stored
+  only as hashes. Another user's data is invisible ([ADR 0007](docs/adr/0007-authentication.md)).
+- **Analytics**: an account's transactions (newest first, paged) and inflow, outflow and net per
+  currency, overall or per month. Different currencies are never added together
+  ([ADR 0008](docs/adr/0008-analytics.md)).
+- **A second source**: accounts linked to a banking-ledger-api account, synced on request with the
+  caller's ledger token (never stored), checked entry by entry against the running balance and
+  deduplicated by the ledger's entry id ([ADR 0009](docs/adr/0009-ledger-source.md)).
+- **Running on one server**: `/health` and `/ready` probes, a rate limit per client address, app
+  logs with time and level, database timeouts, and a systemd + reverse proxy setup
+  ([ADR 0010](docs/adr/0010-operational-readiness.md),
   [Running on a server](#running-on-a-server-adr-0010)).
 
-Not built yet: totals across accounts, categories or merchant grouping, export, self-service
-sign-up or password login.
-The target users (accountants, bookkeepers, freelancers, small businesses) are hypotheses that
-have **not** been validated.
+Not built: format adapters for real bank exports (one strict CSV dialect only), totals across
+accounts, categories or merchant grouping, export, self-service sign-up or password login.
 
 ## Quick start
 
