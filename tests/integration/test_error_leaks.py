@@ -1,6 +1,6 @@
 """What a database error does and does not reveal about the row that caused it.
 
-Statement rows are personal financial data (README "Errors", ADR 0003). The results here are why
+Statement rows are personal financial data (docs/csv-format.md, ADR 0003). The results here are why
 ADR 0003 forbids logging or returning any DBAPIError via str()/repr():
 
 - Server-side constraint violations: SQLAlchemy's text is clean thanks to hide_parameters=True,

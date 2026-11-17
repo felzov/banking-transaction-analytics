@@ -1,6 +1,6 @@
 """Parser for the canonical statement CSV format (v1).
 
-Format (see README):
+Format (see docs/csv-format.md):
 - UTF-8, optional BOM. First line is a header.
 - Required columns (any order, case-insensitive): date, description, amount, currency.
 - Extra columns are allowed and ignored.

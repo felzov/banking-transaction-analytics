@@ -41,7 +41,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 _bearer = HTTPBearer(
     auto_error=False,
     bearerFormat="bta_<43 characters>",
-    description="An API token issued with the CLI (README, Authentication).",
+    description="An API token issued with the CLI (docs/api.md, Authentication).",
 )
 
 

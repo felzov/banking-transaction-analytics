@@ -7,7 +7,7 @@ would let one address reach the app, and /ready's queries, without limit. A refu
 costs the event loop its parsing and a 429, so a flood is capped in what it reaches, not in CPU.
 
 - The buckets live in process memory: the limit is per server process and resets on restart. Run
-  one worker (README, "Running on a server").
+  one worker (docs/deployment.md).
 - The client is the address uvicorn reports. Behind a proxy that is the proxy's own, unless uvicorn
   trusts it (FORWARDED_ALLOW_IPS) and takes the client from X-Forwarded-For. Anyone else's
   X-Forwarded-For is ignored, so a client cannot pick itself a fresh bucket.

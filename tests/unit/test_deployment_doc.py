@@ -1,4 +1,4 @@
-"""The systemd unit in the README ("Running on a server", ADR 0010) keeps what the app relies on."""
+"""The systemd unit in docs/deployment.md (ADR 0010) keeps what the app relies on."""
 
 import re
 from pathlib import Path
@@ -7,8 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _directives() -> dict[str, list[str]]:
-    """Key -> values of the README's systemd unit, with continued lines joined."""
-    blocks = re.findall(r"```ini\n(.*?)```", (ROOT / "README.md").read_text(), re.DOTALL)
+    """Key -> values of the documented systemd unit, with continued lines joined."""
+    doc = (ROOT / "docs" / "deployment.md").read_text()
+    blocks = re.findall(r"```ini\n(.*?)```", doc, re.DOTALL)
     (unit,) = [block for block in blocks if "[Service]" in block]
     directives: dict[str, list[str]] = {}
     for line in unit.replace("\\\n", " ").splitlines():

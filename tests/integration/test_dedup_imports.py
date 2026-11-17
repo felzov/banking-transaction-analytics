@@ -91,7 +91,7 @@ async def test_overlapping_statement_adds_only_the_new_rows(session: AsyncSessio
 
 
 async def test_corrected_file_adds_only_the_fixed_rows(session: AsyncSession) -> None:
-    # The scenario from README "Known limitations" before Phase 4: re-uploading a fixed file
+    # A known limitation before Phase 4 (docs/limitations.md): re-uploading a fixed file
     # used to store its previously valid rows (Rent, Refund) a second time.
     account_id = await new_account(session)
     first = await run_import(session, account_id, MIXED)
