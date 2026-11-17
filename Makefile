@@ -28,7 +28,7 @@ check-all: check test-integration
 run:
 > uv run uvicorn transaction_analytics.main:app --reload
 
-# Users and API tokens, e.g. make cli args="create-user --name Max" (README "Authentication").
+# Users and API tokens, e.g. make cli args="create-user --name Max" (docs/api.md, "Authentication").
 cli:
 > uv run python -m transaction_analytics.cli $(args)
 
